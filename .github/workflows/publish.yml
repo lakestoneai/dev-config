@@ -1,0 +1,30 @@
+# Publishes to npm on a GitHub release, via npm trusted publishing (OIDC): no npm token stored anywhere.
+# npm side: package settings → Trusted publisher → GitHub Actions, org lakestoneai, repo dev-config,
+# workflow publish.yml. Needs npm CLI >= 11.5.1 and Node >= 22.14 (docs.npmjs.com/trusted-publishers).
+# `bun publish` can't make provenance statements yet (bun.com/docs/pm/cli/publish), so this step uses npm.
+name: Publish
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+  publish:
+    needs: test
+    runs-on: ubuntu-latest # GitHub-hosted runner required for provenance
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Tag matches package.json version
+        run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
+      - run: npm install -g npm@^11.5.1
+      - run: npm publish --provenance --access public

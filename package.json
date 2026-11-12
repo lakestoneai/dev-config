@@ -1,0 +1,36 @@
+{
+  "name": "@lakestoneai/dev-config",
+  "version": "0.1.0",
+  "description": "Lakestone house defaults for code config (Playwright first). Repos import these and keep only their own exceptions.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lakestoneai/dev-config.git"
+  },
+  "exports": {
+    "./playwright": {
+      "types": "./playwright.d.ts",
+      "default": "./playwright.js"
+    }
+  },
+  "files": ["playwright.js", "playwright.d.ts"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.40"
+  },
+  "peerDependenciesMeta": {
+    "@playwright/test": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "playwright test -c test/playwright.config.ts && playwright test -c test/repo-override.config.ts"
+  },
+  "packageManager": "bun@1.4.4",
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}
