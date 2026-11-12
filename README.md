@@ -1,6 +1,6 @@
 # @lakestoneai/dev-config
 
-Lakestone's house defaults for code config. Each client repo imports these and keeps only its own exceptions; a fix here reaches every repo as a Renovate bump PR that the repo's own CI proves.
+Lakestone's house defaults for code config: Playwright, Prettier, ESLint, tsconfig bases, a Renovate preset and a `setup-bun` CI action. Each client repo imports these and keeps only its own exceptions; a fix here reaches every repo as a Renovate bump PR that the repo's own CI proves.
 
 Claude Code tooling lives in [`lakestoneai/claude-tools`](https://github.com/lakestoneai/claude-tools), not here. This package is for config that CI, Vercel and every developer machine read.
 
@@ -22,14 +22,74 @@ export default defineConfig(playwrightDefaults, {
 })
 ```
 
-| Setting | Value | Playwright's own default |
-|---|---|---|
-| `use.actionTimeout` | 10 s | 0 (wait forever) |
-| `use.navigationTimeout` | 30 s | 0 (wait forever) |
+| Setting                 | Value | Playwright's own default |
+| ----------------------- | ----- | ------------------------ |
+| `use.actionTimeout`     | 10 s  | 0 (wait forever)         |
+| `use.navigationTimeout` | 30 s  | 0 (wait forever)         |
 
 Defaults go first: `defineConfig` merges `use` and `expect` key by key, so anything the repo sets wins, at config level or per project. A slow page needs a longer cap: set `actionTimeout` in that repo's `use`, that project's `use`, or one spec's `test.use()`.
 
 Why: with no `actionTimeout`, a click on a missing element waits forever. A normal test run is still capped by the test timeout (with a vague "Test timeout exceeded" error); Playwright's planner/generator/healer agents and scripted runs have no test timeout and hang.
+
+## Prettier
+
+```json
+// .prettierrc — as-is
+"@lakestoneai/dev-config/prettier"
+```
+
+```js
+// prettier.config.js — with a workspace's own plugins and import order
+import base from '@lakestoneai/dev-config/prettier'
+export default {
+  ...base,
+  plugins: ['@trivago/prettier-plugin-sort-imports'],
+  importOrder: ['^zod$', '<THIRD_PARTY_MODULES>', '^[./]'],
+}
+```
+
+House style: no semicolons, single quotes, `es5` trailing commas, width 80, LF. A repo with an established different style (width 100) overrides those keys rather than reformatting everything.
+
+## ESLint (flat config)
+
+```js
+// eslint.config.js
+import { defineConfig } from 'eslint/config'
+import { typescript } from '@lakestoneai/dev-config/eslint'
+
+export default defineConfig({
+  ...typescript,
+  files: ['**/*.ts'],
+  rules: { ...typescript.rules, 'no-console': ['error', { allow: ['log'] }] },
+})
+```
+
+`typescript` = `@eslint/js` recommended + typescript-eslint recommended + the house rules (`_`-prefixed unused names allowed, inline type imports, no duplicate imports, no console). Plugins, globals and custom rules (design-system) stay in the repo. Peer dependencies: `eslint`, `@eslint/js`, `typescript-eslint`.
+
+## tsconfig bases
+
+```json
+{ "extends": "@lakestoneai/dev-config/tsconfig/bun.json", "include": ["src"] }
+```
+
+| Base              | For                               | Adds to `strict.json`                                                                                                    |
+| ----------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `strict.json`     | every workspace                   | ES2022, Bundler resolution, `noEmit`, `strict`, no unused locals/parameters, no fallthrough, checked side-effect imports |
+| `bun.json`        | API, CLI, shared packages         | `types: ["bun"]`                                                                                                         |
+| `react-app.json`  | Vite React app                    | DOM libs, `react-jsx`                                                                                                    |
+| `node-tools.json` | vite/vitest configs, Node scripts | ES2023, `allowJs`                                                                                                        |
+
+`include`, `paths` and `tsBuildInfoFile` stay in the repo. A workspace on Node ESM (NodeNext) overrides `module`/`moduleResolution`.
+
+## CI: setup-bun action
+
+```yaml
+- uses: actions/checkout@<sha> # vX
+- uses: lakestoneai/dev-config/.github/actions/setup-bun@<sha> # v0.3.0
+  # with: { working-directory: apps/web, install: 'false' }
+```
+
+Bun from `package.json` `packageManager`, the Bun install cache keyed on `bun.lock`, then `bun install --frozen-lockfile` (retried once). Pin it by SHA; Renovate bumps it.
 
 ## Renovate preset
 

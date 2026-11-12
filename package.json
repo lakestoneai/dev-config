@@ -1,7 +1,7 @@
 {
   "name": "@lakestoneai/dev-config",
-  "version": "0.2.0",
-  "description": "Lakestone house defaults for code config (Playwright first). Repos import these and keep only their own exceptions.",
+  "version": "0.3.0",
+  "description": "Lakestone house defaults for code config: Playwright, Prettier, ESLint, tsconfig bases, the Renovate preset and a setup-bun CI action. Repos import these and keep only their own exceptions.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -12,25 +12,70 @@
     "./playwright": {
       "types": "./playwright.d.ts",
       "default": "./playwright.js"
-    }
+    },
+    "./prettier": {
+      "types": "./prettier.d.ts",
+      "default": "./prettier.js"
+    },
+    "./eslint": {
+      "types": "./eslint.d.ts",
+      "default": "./eslint.js"
+    },
+    "./tsconfig/*.json": "./tsconfig/*.json"
   },
-  "files": ["playwright.js", "playwright.d.ts"],
+  "files": [
+    "playwright.js",
+    "playwright.d.ts",
+    "prettier.js",
+    "prettier.d.ts",
+    "eslint.js",
+    "eslint.d.ts",
+    "tsconfig/*.json"
+  ],
   "publishConfig": {
     "access": "public"
   },
   "peerDependencies": {
-    "@playwright/test": ">=1.40"
+    "@playwright/test": ">=1.40",
+    "prettier": ">=3",
+    "eslint": ">=9",
+    "@eslint/js": ">=9",
+    "typescript-eslint": ">=8",
+    "typescript": ">=5.5"
   },
   "peerDependenciesMeta": {
     "@playwright/test": {
       "optional": true
+    },
+    "prettier": {
+      "optional": true
+    },
+    "eslint": {
+      "optional": true
+    },
+    "@eslint/js": {
+      "optional": true
+    },
+    "typescript-eslint": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
     }
   },
   "scripts": {
-    "test": "playwright test -c test/playwright.config.ts && playwright test -c test/repo-override.config.ts"
+    "test": "bun test test/unit && playwright test -c test/playwright.config.ts && playwright test -c test/repo-override.config.ts"
   },
   "packageManager": "bun@1.4.4",
   "devDependencies": {
-    "@playwright/test": "1.63.0"
-  }
+    "@eslint/js": "9.39.5",
+    "@playwright/test": "1.63.0",
+    "@types/bun": "1.4.2",
+    "@types/react": "19.3.0",
+    "eslint": "9.39.5",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.0"
+  },
+  "prettier": "@lakestoneai/dev-config/prettier"
 }

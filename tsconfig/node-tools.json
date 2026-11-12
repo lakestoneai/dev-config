@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Lakestone build tooling (vite/vitest config, scripts run by Node)",
+  "extends": "./strict.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "allowJs": true
+  }
+}

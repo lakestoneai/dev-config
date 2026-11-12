@@ -10,13 +10,21 @@ test('resolved config carries the right timeouts', () => {
   const { name, use } = test.info().project
   expect(use.actionTimeout).toBe(expected[name].action)
   expect(use.navigationTimeout).toBe(expected[name].nav)
+  expect(use.trace).toBe('retain-on-failure')
+  expect(use.screenshot).toBe('only-on-failure')
+  expect(test.info().config.forbidOnly).toBe(!!process.env.CI)
 })
 
-test('a click on a missing element fails at actionTimeout, not after the test timeout', async ({ page }) => {
+test('a click on a missing element fails at actionTimeout, not after the test timeout', async ({
+  page,
+}) => {
   const want = expected[test.info().project.name].action
   await page.setContent('<p>nothing to click</p>')
   const started = Date.now()
-  const err = await page.locator('#missing').click().catch((e: Error) => e)
+  const err = await page
+    .locator('#missing')
+    .click()
+    .catch((e: Error) => e)
   const took = Date.now() - started
   expect(err).toBeInstanceOf(Error)
   expect((err as Error).message).toContain(`Timeout ${want}ms exceeded`)
