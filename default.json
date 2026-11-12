@@ -1,0 +1,102 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    "group:monorepos",
+    "group:recommended",
+    "mergeConfidence:all-badges"
+  ],
+  "timezone": "Australia/Perth",
+  "schedule": ["* 0-5 * * 1"],
+  "labels": ["dependencies"],
+  "rangeStrategy": "bump",
+  "prConcurrentLimit": 6,
+  "prHourlyLimit": 0,
+  "commitHourlyLimit": 3,
+  "minimumReleaseAge": "3 days",
+  "rebaseWhen": "conflicted",
+  "automergeStrategy": "squash",
+  "osvVulnerabilityAlerts": true,
+  "dependencyDashboardOSVVulnerabilitySummary": "unresolved",
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "schedule": ["at any time"],
+    "minimumReleaseAge": null,
+    "automerge": true,
+    "automergeType": "pr",
+    "platformAutomerge": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["* 0-5 1 * *"],
+    "automerge": true,
+    "automergeType": "pr",
+    "platformAutomerge": true
+  },
+  "packageRules": [
+    {
+      "description": "WEEKLY BULK - every minor/patch/digest lands in ONE Monday PR, human-merged (CI is the gate)",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "groupName": "weekly dependencies",
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "deps",
+      "automerge": false
+    },
+    {
+      "description": "WEEKLY GITHUB ACTIONS - workflow changes kept out of the app bulk PR",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "groupName": "weekly GitHub Actions",
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "deps",
+      "automerge": false
+    },
+    {
+      "description": "WEEKLY TOOLCHAIN - break builds despite SemVer, so isolated: a red vite bump cannot hold back the rest",
+      "matchPackageNames": [
+        "typescript",
+        "eslint",
+        "@eslint/js",
+        "typescript-eslint",
+        "@typescript-eslint/**",
+        "eslint-plugin-*",
+        "eslint-config-*",
+        "vite",
+        "@vitejs/**",
+        "vitest",
+        "@vitest/**",
+        "esbuild",
+        "rollup",
+        "prettier",
+        "prettier-plugin-*",
+        "knip"
+      ],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "groupName": "weekly toolchain",
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "deps",
+      "automerge": false
+    },
+    {
+      "description": "MANUAL - majors are dashboard checkboxes; once ticked, build immediately (not next Monday)",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "automerge": false,
+      "labels": ["dependencies", "major"],
+      "schedule": ["at any time"]
+    },
+    {
+      "description": "MANUAL BUN RUNTIME - the Bun version (packageManager, engines, setup-bun, and constraints.bun which Renovate reads as oven-sh/bun) moves only when ticked on the dashboard, in its own PR, never inside the weekly bulk",
+      "matchPackageNames": ["bun", "oven-sh/bun"],
+      "groupName": "bun runtime",
+      "dependencyDashboardApproval": true,
+      "automerge": false,
+      "labels": ["dependencies", "runtime"],
+      "schedule": ["at any time"]
+    }
+  ],
+  "description": "Lakestone Renovate standard (@lakestoneai/dev-config): weekly grouped PRs Monday 00:00-05:59 AWST, majors and the Bun runtime via the dashboard, security fixes any time and auto-merged on green, monthly lockfile refresh. Repos extend it pinned (github>lakestoneai/dev-config#vX.Y.Z) and keep only constraints, baseBranchPatterns and their own groups.",
+  "ignorePaths": ["**/node_modules/**"]
+}

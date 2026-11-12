@@ -31,6 +31,21 @@ Defaults go first: `defineConfig` merges `use` and `expect` key by key, so anyth
 
 Why: with no `actionTimeout`, a click on a missing element waits forever. A normal test run is still capped by the test timeout (with a vague "Test timeout exceeded" error); Playwright's planner/generator/healer agents and scripted runs have no test timeout and hang.
 
+## Renovate preset
+
+`default.json` is the Lakestone Renovate standard: weekly grouped PRs on Monday 00:00-05:59 AWST (app, GitHub Actions and toolchain apart), majors and the Bun runtime via the Dependency Dashboard, security fixes at any time and auto-merged on green, monthly lockfile refresh, a 3-day release age.
+
+```json
+// renovate.json
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>lakestoneai/dev-config#v0.2.0"],
+  "constraints": { "bun": "1.4.2" }
+}
+```
+
+Pin the tag: Renovate then opens a PR when a newer tag of this preset exists. Keep in the repo only what is the repo's own: `constraints`, `baseBranchPatterns`, and extra `packageRules` (they apply after the preset's, so they win). CI validates the preset with Renovate's own validator.
+
 ## Release
 
 1. Bump `version` in `package.json` (a changed default is at least a minor: a tighter cap can turn a slow suite red; say which repos may need an override). Push to `main` and wait for CI green.
