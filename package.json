@@ -1,6 +1,6 @@
 {
   "name": "@lakestoneai/dev-config",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lakestone house defaults for code config (Playwright first). Repos import these and keep only their own exceptions.",
   "license": "MIT",
   "type": "module",

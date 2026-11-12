@@ -4,6 +4,12 @@ Lakestone's house defaults for code config. Each client repo imports these and k
 
 Claude Code tooling lives in [`lakestoneai/claude-tools`](https://github.com/lakestoneai/claude-tools), not here. This package is for config that CI, Vercel and every developer machine read.
 
+## Install
+
+```sh
+bun add -d @lakestoneai/dev-config
+```
+
 ## Playwright
 
 ```ts
@@ -28,6 +34,7 @@ Why: with no `actionTimeout`, a click on a missing element waits forever. A norm
 ## Release
 
 1. Bump `version` in `package.json`, merge to `main`.
-2. Create a GitHub release tagged `v<version>`. `publish.yml` runs the tests, then publishes to npm with provenance via trusted publishing.
+2. Create a GitHub release tagged `v<version>`. `publish.yml` runs the tests, then stages the version on npm via trusted publishing (no token).
+3. A maintainer approves it with 2FA on npmjs.com → Staged Packages. Only then does it go live, and Renovate opens the bump PRs.
 
 `bun run test` proves the defaults and both override paths against a real browser.
