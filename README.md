@@ -7,7 +7,7 @@ Claude Code tooling lives in [`lakestoneai/claude-tools`](https://github.com/lak
 ## Install
 
 ```sh
-bun add -d @lakestoneai/dev-config
+bun add -d --exact @lakestoneai/dev-config
 ```
 
 ## Playwright
@@ -33,8 +33,8 @@ Why: with no `actionTimeout`, a click on a missing element waits forever. A norm
 
 ## Release
 
-1. Bump `version` in `package.json`, merge to `main`.
-2. Create a GitHub release tagged `v<version>`. `publish.yml` runs the tests, then stages the version on npm via trusted publishing (no token).
+1. Bump `version` in `package.json` (a changed default is at least a minor: a tighter cap can turn a slow suite red; say which repos may need an override). Push to `main` and wait for CI green.
+2. `gh release create v<version> --repo lakestoneai/dev-config --target main`. `publish.yml` runs the tests, then stages the version on npm via trusted publishing (no token).
 3. A maintainer approves it with 2FA on npmjs.com → Staged Packages. Only then does it go live, and Renovate opens the bump PRs.
 
 `bun run test` proves the defaults and both override paths against a real browser.
