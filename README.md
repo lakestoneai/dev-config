@@ -31,6 +31,103 @@ Defaults go first: `defineConfig` merges `use` and `expect` key by key, so anyth
 
 Why: with no `actionTimeout`, a click on a missing element waits forever. A normal test run is still capped by the test timeout (with a vague "Test timeout exceeded" error); Playwright's planner/generator/healer agents and scripted runs have no test timeout and hang.
 
+## Playwright e2e harness
+
+One e2e config, preflight and fixtures for every repo (0.4.0). Playwright (>= 1.52, the first with `failOnFlakyTests`) is a peer dependency only: to try an unreleased build in a repo, install the `bun pm pack` tarball, not a `link:`/symlink (a link loads `@playwright/test` twice and Playwright then refuses to run).
+
+```ts
+// playwright.config.ts
+import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'
+import { auth } from './e2e/auth'
+export default defineE2EConfig({
+  baseURL: 'http://localhost:5173',
+  testDir: './e2e',
+  storageState: 'e2e/.auth/user.json', // written by e2e/auth.setup.ts
+  mobile: true, // adds the `mobile` project
+  workers: { default: 4, smoke: 2 },
+  globalSetup: './e2e/preflight.ts',
+  use: { auth }, // per-worker sign-in (below); omit `storageState` above when you use it
+})
+```
+
+```ts
+// e2e/preflight.ts
+import {
+  preflight,
+  loopbackOnly,
+  httpOk,
+  localSupabase,
+  commands,
+  custom,
+} from '@lakestoneai/dev-config/playwright/preflight'
+export default preflight([
+  loopbackOnly(url),
+  httpOk(url),
+  localSupabase(supabaseUrl),
+  commands(['bun']),
+  custom('not live', async () => {
+    /* run a script, query a seed row… */
+  }),
+])
+```
+
+```ts
+// e2e/auth.ts: its own module, typed E2EAuth (Playwright's `use` typing needs a variable)
+import type { E2EAuth } from '@lakestoneai/dev-config/playwright/fixtures'
+export const auth: E2EAuth = {
+  accounts: (i) => ({
+    email: `e2e${i}@example.test`,
+    password: '…',
+    storageInit: { modules: 'all' },
+  }),
+  login: async (page, account) => {
+    /* sign in */
+  },
+}
+```
+
+```ts
+// e2e/fixtures.ts
+export { test, watchConsole } from '@lakestoneai/dev-config/playwright/fixtures'
+export { expect } from '@playwright/test'
+// a signed-out spec: test.use({ auth: null })
+```
+
+| Export                                                                                                             | Does                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `defineE2EConfig(opts)` from `/playwright`                                                                         | Projects `setup` (`*.setup.ts`) → `chromium` (Desktop Chrome 1440×900, `storageState`, depends on setup) → `mobile` (390 wide, only `@mobile` tests, when `opts.mobile`); lane, reporters, workers (default 4), `fullyParallel` (true)       |
+| `preflight(checks, {timeoutMs})` from `/playwright/preflight`                                                      | `globalSetup` factory (runs on a real run, never on `--list`). Runs every check in order, throws ONE error listing every failed one; whole run bounded (default 20 s)                                                                        |
+| `loopbackOnly(url)` `httpOk(url,{timeoutMs})` `localSupabase(url,{boxHost})` `commands([bins])` `custom(name, fn)` | Built-in checks; `custom` takes any async function (run a shell script, query a seed row)                                                                                                                                                    |
+| `test`, `watchConsole(page, allow)` from `/playwright/fixtures`                                                    | `workerAuth` (worker-scoped storageState per `parallelIndex`, from `use: { auth }` in the config, state file reused), `consoleGuard` (auto; `consoleOptions: { allow: RegExp[] }`), `owned(prefix)` (unique names per worker, test and call) |
+
+Merge order, lowest first: `playwrightDefaults` < harness < your opts. Any option the harness doesn't name is passed through (`testDir`, `webServer`, `timeout`, `use`, `projects`, …) and wins; a `projects` array replaces the harness projects; `use` is merged key by key. `workers`, `retries` and `fullyParallel` take a value or `{ default, smoke, gate, full, real }`.
+
+| Env var          | Effect                                                                                                                                 |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `E2E_LANE`       | `smoke` = `@smoke` · `gate` (default) = all but `@real`/`@manual` · `full` = all but `@manual` · `real` = `@real`. Unknown value fails |
+| `E2E_VIDEO=1`    | video on + `slowMo` 300 (opts `video` / `slowMo` win)                                                                                  |
+| `E2E_SHARD`      | any value (or `--shard` on the CLI) adds the `blob` reporter                                                                           |
+| `E2E_REPORT_DIR` | adds `html` (`<dir>/html`) and `json` (`<dir>/results.json`) reporters                                                                 |
+| `E2E_OUTPUT_DIR` | `outputDir`; beats the repo's own, so parallel stacks of one repo keep separate results and `.auth` state                              |
+| `CI`             | `failOnFlakyTests` in the `smoke` lane (plus `forbidOnly` from the defaults)                                                           |
+
+| Tag       | Meaning                                                                                        |
+| --------- | ---------------------------------------------------------------------------------------------- |
+| `@smoke`  | Critical journeys, the PR gate                                                                 |
+| `@real`   | Needs a real corpus or vendor sandbox; only in `full` and `real`                               |
+| `@mobile` | Runs in the `mobile` project (in the `smoke` lane only with `@smoke` too)                      |
+| `@manual` | Writes to a vendor or sandbox; never automatic (no lane runs it; select with `--grep @manual`) |
+
+Details worth knowing:
+
+- **Lanes** match whole tag tokens (`@real` never matches `@realtime` or `agent@realestate.com`), also inside a repo's own `projects`; the harness `setup` project always runs, and so does any project of your own that another project lists in `dependencies` (unless it sets its own `grep`).
+- **`retries`** defaults to 1 on CI in the `smoke` lane (a flaky test can only be seen if a retry can pass it, which is what `failOnFlakyTests` needs); set `retries` to change it.
+- **`consoleGuard`** needs a browser context, so even an API-only test opens one: give API specs plain `@playwright/test`. Chromium logs every failed request as `console.error: Failed to load resource: … status of 401`, so a wrong-password or expired-session test must allow it. An `allow` RegExp is tested against `<text> @ <url>` (so a pattern anchored with `$` on the text alone no longer matches), e.g. `consoleOptions: { allow: [/status of 401\b.* @ .*\/auth\/v1\//] }`. A missing favicon is ignored by default.
+- **`workerAuth`** saves state as `outputDir/.auth/<index>-<email>.json`, so a worker slot given another role logs in again; the sign-in runs as a worker setup step (60 s cap, not the first test's timeout) with the project's `use` (HTTPS errors, headers, locale). Set it in the config's `use: { auth }` (an `E2EAuth` variable); a signed-out spec says `test.use({ auth: null })` (`undefined` means "unset" and keeps the config's login). A `test.use({ auth })` in a shared helper module is ignored (it only applies inside the spec file or describe that calls it), and Playwright's types do not accept a worker option in `extend()`.
+- **`preflight`** starts every check at once under one deadline; a synchronous check blocks the event loop and cannot be timed out.
+
+Lanes filter by tag, so they work with `test.fixme`, serial `describe`s and tags set per loop iteration (`{ tag: … }`). Gotchas: Playwright reads a bare two-element array or a bare function as an option value as a fixture, which is why the options are objects (`auth`, `consoleOptions`). `workerAuth` keeps state in the project's `outputDir/.auth/<index>-<email>.json`; Playwright clears `outputDir` each run, so a run logs in once per worker and a restarted worker reuses the file.
+
 ## Prettier
 
 ```json
@@ -105,6 +202,15 @@ Bun from `package.json` `packageManager`, the Bun install cache keyed on `bun.lo
 ```
 
 Pin the tag: Renovate then opens a PR when a newer tag of this preset exists. Keep in the repo only what is the repo's own: `constraints`, `baseBranchPatterns`, and extra `packageRules` (they apply after the preset's, so they win). CI validates the preset with Renovate's own validator.
+
+## Versions
+
+| Version | Adds                                                                                                                     |
+| ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 0.4.0   | Playwright e2e harness: `defineE2EConfig`, `preflight`, fixtures. Peer `@playwright/test` is now `>=1.52` (was `>=1.40`) |
+| 0.3.0   | Prettier base, ESLint base, tsconfig bases, Playwright `forbidOnly`/trace/screenshot, `setup-bun` action                 |
+| 0.2.0   | Renovate preset (`default.json`)                                                                                         |
+| 0.1.1   | Releases stage on npm via trusted publishing                                                                             |
 
 ## Release
 
