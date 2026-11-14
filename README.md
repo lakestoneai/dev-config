@@ -111,15 +111,15 @@ Merge order, lowest first: `playwrightDefaults` < harness < your opts. Any optio
 | `E2E_SHARD_TIMINGS` | path of a previous run's JSON report: with `--shard` on the CLI (`E2E_SHARD` alone only adds the blob reporter), shards by recorded duration instead of count (see below). Needs Playwright ≥ 1.62; older versions ignore it and shard by count |
 | `E2E_REPORT_DIR`    | adds `html` (`<dir>/html`) and `json` (`<dir>/results.json`) reporters                                                                                                                                                                          |
 | `E2E_OUTPUT_DIR`    | `outputDir`; beats the repo's own, so parallel stacks of one repo keep separate results and `.auth` state                                                                                                                                       |
-| `CI`                | `failOnFlakyTests` in the `smoke` lane (plus `forbidOnly` from the defaults) and the lane's `maxFailures`                                                                                                                                       |
+| `CI`                | `failOnFlakyTests` in the `smoke` lane (plus `forbidOnly` from the defaults) the lane's `maxFailures` and `globalTimeout`                                                                                                                       |
 | `GITHUB_ACTIONS`    | adds the `github` reporter (inline annotations on the PR check)                                                                                                                                                                                 |
 
-| Tag       | Meaning                                                                                                                       |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `@smoke`  | Critical journeys, the PR gate                                                                                                |
-| `@real`   | Needs a real corpus or vendor sandbox; only in `full` and `real`                                                              |
-| `@mobile` | Runs in the `mobile` project (in the `smoke` lane only with `@smoke` too)                                                     |
-| `@manual` | Writes to a vendor or sandbox; never automatic: only `E2E_LANE=manual` runs it (a CLI `--grep` cannot override a lane filter) |
+| Tag       | Meaning                                                                                                                                                                                                                                                                         |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@smoke`  | Critical journeys, the PR gate                                                                                                                                                                                                                                                  |
+| `@real`   | Needs a real corpus or vendor sandbox; only in `full` and `real`                                                                                                                                                                                                                |
+| `@mobile` | Runs in the `mobile` project (in the `smoke` lane only with `@smoke` too)                                                                                                                                                                                                       |
+| `@manual` | Writes to a vendor or sandbox; never automatic: only `E2E_LANE=manual` runs it (a CLI `--grep` cannot override a lane filter; a repo project's own `grepInvert` is added to the lane's. A dependency project (`setup`) is exempt from lanes, so keep `@manual` tests out of it) |
 
 Details worth knowing:
 

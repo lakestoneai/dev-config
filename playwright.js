@@ -63,7 +63,7 @@ export function defineE2EConfig(opts = {}) {
   } = opts
   const env = process.env
   const lane = env.E2E_LANE || 'gate'
-  if (!(lane in LANES)) {
+  if (!Object.hasOwn(LANES, lane)) {
     throw new Error(
       `E2E_LANE=${lane} is not a lane (use ${Object.keys(LANES).join(' | ')})`
     )
@@ -158,7 +158,9 @@ export function defineE2EConfig(opts = {}) {
     use,
     projects,
     ...repo,
-    ...(repo.projects && { projects: exemptDependencies(repo.projects) }),
+    ...(repo.projects && {
+      projects: exemptDependencies(repo.projects, grepInvert),
+    }),
   })
 }
 
@@ -176,11 +178,19 @@ const LANES = {
 
 // The config-level lane filter reaches a repo's own projects. A project that another one depends on (a setup
 // project) must always run, or its dependants start without it: give it the same match-everything filter.
-function exemptDependencies(projects) {
+function exemptDependencies(projects, laneInvert) {
   const needed = new Set(projects.flatMap((p) => p.dependencies ?? []))
-  return projects.map((p) =>
-    needed.has(p.name) && !p.grep && !p.grepInvert
-      ? { ...p, grep: /./, grepInvert: /(?!)/ }
-      : p
-  )
+  return projects.map((p) => {
+    if (needed.has(p.name) && !p.grep && !p.grepInvert)
+      return { ...p, grep: /./, grepInvert: /(?!)/ }
+    // a project's own grepInvert replaces the config-level one in Playwright: keep the lane's exclusions (@manual, @real) too
+    if (laneInvert && p.grepInvert && !needed.has(p.name))
+      return { ...p, grepInvert: anyOf(p.grepInvert, laneInvert) }
+    return p
+  })
 }
+const anyOf = (a, b) =>
+  new RegExp(
+    `(?:${a.source})|(?:${b.source})`,
+    [...new Set(a.flags + b.flags)].join('')
+  )

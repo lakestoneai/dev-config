@@ -72,6 +72,40 @@ test('manual lane: per-lane maps accept it; no CI limits by default', () => {
   expect(c('', { CI: '1' }).globalTimeout).toBe(0)
   expect(c('maxFailures: { manual: 2 }', { CI: '1' }).maxFailures).toBe(2)
 })
+test('an inherited property name is not a lane', () => {
+  for (const lane of [
+    'toString',
+    'constructor',
+    '__proto__',
+    'hasOwnProperty',
+  ]) {
+    const r = playwright(dir, ['--list'], { E2E_LANE: lane })
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain(`E2E_LANE=${lane} is not a lane`)
+  }
+})
+test("a repo project's own grepInvert is added to the lane's, never replaces it", () => {
+  const d = project({
+    'playwright.config.ts': config(
+      `projects: [{ name: 'own', testIgnore: /.*\\.setup\\.ts/, grepInvert: /@slow/ }]`
+    ),
+    'a.spec.ts': specs + `test('slow journey @slow', async () => {})\n`,
+  })
+  const own = (env: Record<string, string>) => listed(d, env).sort()
+  expect(own({})).toEqual([
+    'own › critical @smoke',
+    'own › narrow @mobile',
+    'own › narrow critical @mobile @smoke',
+    'own › plain journey',
+  ]) // gate: no @real, no @manual, and the repo's @slow is out too
+  expect(own({ E2E_LANE: 'manual' })).toEqual([
+    'own › writes to vendor @manual',
+  ])
+  expect(own({ E2E_LANE: 'full' }).some((l) => l.includes('@manual'))).toBe(
+    false
+  )
+  expect(own({ E2E_LANE: 'full' }).some((l) => l.includes('@slow'))).toBe(false)
+})
 test('an unknown lane is refused', () => {
   const r = playwright(dir, ['--list'], { E2E_LANE: 'nightly' })
   expect(r.code).not.toBe(0)
@@ -400,4 +434,18 @@ test('blob reporter also on PLAYWRIGHT_BLOB_OUTPUT_FILE or E2E_BLOB=1, not only 
   expect(names({ E2E_BLOB: '1' })).toEqual(['list', 'blob'])
   expect(names({ E2E_BLOB: '0' })).toEqual(['list'])
   expect(names({})).toEqual(['list'])
+})
+
+// -- fixture projects must never be visible to `bun test` (a stale dir once made the suite import 119 of them)
+test('guard: a *.spec.ts inside a fixture project is not discovered by bun test', () => {
+  const d = project({
+    'leak.spec.ts': `import { test } from 'bun:test'\ntest('LEAKED', () => {})\n`,
+  })
+  const r = Bun.spawnSync(['bun', 'test', 'leak.spec.ts'], {
+    cwd: `${import.meta.dir}/../..`,
+  })
+  const out = r.stdout.toString() + r.stderr.toString()
+  expect(out).not.toContain('LEAKED')
+  expect(out).toContain('did not match any test files')
+  expect(d).toContain('/.e2e-tmp/')
 })
