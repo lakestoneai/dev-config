@@ -31,6 +31,90 @@ Defaults go first: `defineConfig` merges `use` and `expect` key by key, so anyth
 
 Why: with no `actionTimeout`, a click on a missing element waits forever. A normal test run is still capped by the test timeout (with a vague "Test timeout exceeded" error); Playwright's planner/generator/healer agents and scripted runs have no test timeout and hang.
 
+## Playwright e2e harness
+
+One e2e config, preflight and fixtures for every repo (0.4.0). Playwright is a peer dependency.
+
+```ts
+// playwright.config.ts
+import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'
+export default defineE2EConfig({
+  baseURL: 'http://localhost:5173',
+  testDir: './e2e',
+  storageState: 'e2e/.auth/user.json', // written by e2e/auth.setup.ts
+  mobile: true, // adds the `mobile` project
+  workers: { default: 4, smoke: 2 },
+  globalSetup: './e2e/preflight.ts',
+})
+```
+
+```ts
+// e2e/preflight.ts
+import {
+  preflight,
+  loopbackOnly,
+  httpOk,
+  localSupabase,
+  commands,
+  custom,
+} from '@lakestoneai/dev-config/playwright/preflight'
+export default preflight([
+  loopbackOnly(url),
+  httpOk(url),
+  localSupabase(supabaseUrl),
+  commands(['bun']),
+  custom('not live', async () => {
+    /* run a script, query a seed row… */
+  }),
+])
+```
+
+```ts
+// e2e/fixtures.ts
+import { test as base } from '@lakestoneai/dev-config/playwright/fixtures'
+export { expect } from '@playwright/test'
+export const test = base
+test.use({
+  auth: {
+    accounts: (i) => ({
+      email: `e2e${i}@example.test`,
+      password: '…',
+      storageInit: { modules: 'all' },
+    }),
+    login: async (page, a) => {
+      /* sign in */
+    },
+  },
+})
+```
+
+| Export                                                                                                             | Does                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `defineE2EConfig(opts)` from `/playwright`                                                                         | Projects `setup` (`*.setup.ts`) → `chromium` (Desktop Chrome 1440×900, `storageState`, depends on setup) → `mobile` (390 wide, only `@mobile` tests, when `opts.mobile`); lane, reporters, workers (default 4), `fullyParallel` (true)                  |
+| `preflight(checks, {timeoutMs})` from `/playwright/preflight`                                                      | `globalSetup` factory (runs on a real run, never on `--list`). Runs every check in order, throws ONE error listing every failed one; whole run bounded (default 20 s)                                                                                   |
+| `loopbackOnly(url)` `httpOk(url,{timeoutMs})` `localSupabase(url,{boxHost})` `commands([bins])` `custom(name, fn)` | Built-in checks; `custom` takes any async function (run a shell script, query a seed row)                                                                                                                                                               |
+| `test`, `watchConsole(page, allow)` from `/playwright/fixtures`                                                    | `workerAuth` (worker-scoped storageState per `parallelIndex`, via `test.use({ auth: { accounts, login } })`, state file reused), `consoleGuard` (auto; `consoleOptions: { allow: RegExp[] }`), `owned(prefix)` (unique names per worker, test and call) |
+
+Merge order, lowest first: `playwrightDefaults` < harness < your opts. Any option the harness doesn't name is passed through (`testDir`, `webServer`, `timeout`, `use`, `projects`, …) and wins; a `projects` array replaces the harness projects; `use` is merged key by key. `workers`, `retries` and `fullyParallel` take a value or `{ default, smoke, gate, full, real }`.
+
+| Env var          | Effect                                                                                                                                 |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `E2E_LANE`       | `smoke` = `@smoke` · `gate` (default) = all but `@real`/`@manual` · `full` = all but `@manual` · `real` = `@real`. Unknown value fails |
+| `E2E_VIDEO=1`    | video on + `slowMo` 300 (opts `video` / `slowMo` win)                                                                                  |
+| `E2E_SHARD`      | any value (or `--shard` on the CLI) adds the `blob` reporter                                                                           |
+| `E2E_REPORT_DIR` | adds `html` (`<dir>/html`) and `json` (`<dir>/results.json`) reporters                                                                 |
+| `E2E_OUTPUT_DIR` | `outputDir`; beats the repo's own, so parallel stacks of one repo keep separate results and `.auth` state                              |
+| `CI`             | `failOnFlakyTests` in the `smoke` lane (plus `forbidOnly` from the defaults)                                                           |
+
+| Tag       | Meaning                                                                                        |
+| --------- | ---------------------------------------------------------------------------------------------- |
+| `@smoke`  | Critical journeys, the PR gate                                                                 |
+| `@real`   | Needs a real corpus or vendor sandbox; only in `full` and `real`                               |
+| `@mobile` | Runs in the `mobile` project (in the `smoke` lane only with `@smoke` too)                      |
+| `@manual` | Writes to a vendor or sandbox; never automatic (no lane runs it; select with `--grep @manual`) |
+
+Lanes filter by tag, so they work with `test.fixme`, serial `describe`s and tags set per loop iteration (`{ tag: … }`). Gotchas: Playwright reads a bare two-element array or a bare function as an option value as a fixture, which is why the options are objects (`auth`, `consoleOptions`). `workerAuth` keeps state in the project's `outputDir/.auth/<parallelIndex>.json`; Playwright clears `outputDir` each run, so a run logs in once per worker and a restarted worker reuses the file.
+
 ## Prettier
 
 ```json
