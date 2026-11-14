@@ -38,7 +38,7 @@ export declare const test: TestType<
   PlaywrightWorkerArgs &
     PlaywrightWorkerOptions & {
       /** Per-worker sign-in; set with `test.use({ auth })` */
-      auth: E2EAuth | undefined
+      auth: E2EAuth | null | undefined
       workerAuth: string | undefined
     }
 >

@@ -5,6 +5,8 @@ import type {
 } from '@playwright/test'
 export declare const playwrightDefaults: PlaywrightTestConfig
 
+import type { E2EAuth } from './playwright-fixtures.js'
+
 export type PerLane<T> =
   T | { default?: T; smoke?: T; gate?: T; full?: T; real?: T }
 
@@ -30,6 +32,11 @@ export interface E2EOptions extends Omit<
   video?: 'on' | 'off' | 'retain-on-failure' | 'on-first-retry'
   /** Overrides E2E_VIDEO's slowMo (ms) */
   slowMo?: number
+  /** Playwright's `use`, plus the fixtures' options from `/playwright/fixtures` */
+  use?: PlaywrightTestConfig['use'] & {
+    auth?: E2EAuth | null
+    consoleOptions?: { allow?: RegExp[] }
+  }
   projects?: Project[]
   reporter?: ReporterDescription[] | string
 }

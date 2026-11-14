@@ -38,6 +38,7 @@ One e2e config, preflight and fixtures for every repo (0.4.0). Playwright (>= 1.
 ```ts
 // playwright.config.ts
 import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'
+import { auth } from './e2e/auth'
 export default defineE2EConfig({
   baseURL: 'http://localhost:5173',
   testDir: './e2e',
@@ -45,6 +46,7 @@ export default defineE2EConfig({
   mobile: true, // adds the `mobile` project
   workers: { default: 4, smoke: 2 },
   globalSetup: './e2e/preflight.ts',
+  use: { auth }, // per-worker sign-in (below); omit `storageState` above when you use it
 })
 ```
 
@@ -70,30 +72,33 @@ export default preflight([
 ```
 
 ```ts
-// e2e/fixtures.ts
-import { test as base } from '@lakestoneai/dev-config/playwright/fixtures'
-export { expect } from '@playwright/test'
-export const test = base
-test.use({
-  auth: {
-    accounts: (i) => ({
-      email: `e2e${i}@example.test`,
-      password: '…',
-      storageInit: { modules: 'all' },
-    }),
-    login: async (page, a) => {
-      /* sign in */
-    },
+// e2e/auth.ts: its own module, typed E2EAuth (Playwright's `use` typing needs a variable)
+import type { E2EAuth } from '@lakestoneai/dev-config/playwright/fixtures'
+export const auth: E2EAuth = {
+  accounts: (i) => ({
+    email: `e2e${i}@example.test`,
+    password: '…',
+    storageInit: { modules: 'all' },
+  }),
+  login: async (page, account) => {
+    /* sign in */
   },
-})
+}
 ```
 
-| Export                                                                                                             | Does                                                                                                                                                                                                                                                    |
-| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `defineE2EConfig(opts)` from `/playwright`                                                                         | Projects `setup` (`*.setup.ts`) → `chromium` (Desktop Chrome 1440×900, `storageState`, depends on setup) → `mobile` (390 wide, only `@mobile` tests, when `opts.mobile`); lane, reporters, workers (default 4), `fullyParallel` (true)                  |
-| `preflight(checks, {timeoutMs})` from `/playwright/preflight`                                                      | `globalSetup` factory (runs on a real run, never on `--list`). Runs every check in order, throws ONE error listing every failed one; whole run bounded (default 20 s)                                                                                   |
-| `loopbackOnly(url)` `httpOk(url,{timeoutMs})` `localSupabase(url,{boxHost})` `commands([bins])` `custom(name, fn)` | Built-in checks; `custom` takes any async function (run a shell script, query a seed row)                                                                                                                                                               |
-| `test`, `watchConsole(page, allow)` from `/playwright/fixtures`                                                    | `workerAuth` (worker-scoped storageState per `parallelIndex`, via `test.use({ auth: { accounts, login } })`, state file reused), `consoleGuard` (auto; `consoleOptions: { allow: RegExp[] }`), `owned(prefix)` (unique names per worker, test and call) |
+```ts
+// e2e/fixtures.ts
+export { test, watchConsole } from '@lakestoneai/dev-config/playwright/fixtures'
+export { expect } from '@playwright/test'
+// a signed-out spec: test.use({ auth: null })
+```
+
+| Export                                                                                                             | Does                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `defineE2EConfig(opts)` from `/playwright`                                                                         | Projects `setup` (`*.setup.ts`) → `chromium` (Desktop Chrome 1440×900, `storageState`, depends on setup) → `mobile` (390 wide, only `@mobile` tests, when `opts.mobile`); lane, reporters, workers (default 4), `fullyParallel` (true)       |
+| `preflight(checks, {timeoutMs})` from `/playwright/preflight`                                                      | `globalSetup` factory (runs on a real run, never on `--list`). Runs every check in order, throws ONE error listing every failed one; whole run bounded (default 20 s)                                                                        |
+| `loopbackOnly(url)` `httpOk(url,{timeoutMs})` `localSupabase(url,{boxHost})` `commands([bins])` `custom(name, fn)` | Built-in checks; `custom` takes any async function (run a shell script, query a seed row)                                                                                                                                                    |
+| `test`, `watchConsole(page, allow)` from `/playwright/fixtures`                                                    | `workerAuth` (worker-scoped storageState per `parallelIndex`, from `use: { auth }` in the config, state file reused), `consoleGuard` (auto; `consoleOptions: { allow: RegExp[] }`), `owned(prefix)` (unique names per worker, test and call) |
 
 Merge order, lowest first: `playwrightDefaults` < harness < your opts. Any option the harness doesn't name is passed through (`testDir`, `webServer`, `timeout`, `use`, `projects`, …) and wins; a `projects` array replaces the harness projects; `use` is merged key by key. `workers`, `retries` and `fullyParallel` take a value or `{ default, smoke, gate, full, real }`.
 
@@ -118,10 +123,10 @@ Details worth knowing:
 - **Lanes** match whole tag tokens (`@real` never matches `@realtime` or `agent@realestate.com`), also inside a repo's own `projects`; the `setup` project always runs.
 - **`retries`** defaults to 1 on CI in the `smoke` lane (a flaky test can only be seen if a retry can pass it, which is what `failOnFlakyTests` needs); set `retries` to change it.
 - **`consoleGuard`** needs a browser context, so even an API-only test opens one: give API specs plain `@playwright/test`. Chromium logs every failed request as `console.error: Failed to load resource: … status of 401`, so a wrong-password or expired-session test must allow it. An `allow` RegExp is tested against `<text> @ <url>`, e.g. `consoleOptions: { allow: [/status of 401 \(\) @ .*\/auth\/v1\//] }`. A missing favicon is ignored by default.
-- **`workerAuth`** saves state as `outputDir/.auth/<index>-<email>.json`, so a worker slot given another role logs in again; the sign-in runs as a worker setup step (60 s cap, not the first test's timeout) with the project's `use` (HTTPS errors, headers, locale). Set it with `test.use({ auth })` (type `E2EAuth`); Playwright's types do not accept a worker option in `extend()`.
+- **`workerAuth`** saves state as `outputDir/.auth/<index>-<email>.json`, so a worker slot given another role logs in again; the sign-in runs as a worker setup step (60 s cap, not the first test's timeout) with the project's `use` (HTTPS errors, headers, locale). Set it in the config's `use: { auth }` (an `E2EAuth` variable); a signed-out spec says `test.use({ auth: null })` (`undefined` means "unset" and keeps the config's login). A `test.use({ auth })` in a shared helper module is ignored (it only applies inside the spec file or describe that calls it), and Playwright's types do not accept a worker option in `extend()`.
 - **`preflight`** starts every check at once under one deadline; a synchronous check blocks the event loop and cannot be timed out.
 
-Lanes filter by tag, so they work with `test.fixme`, serial `describe`s and tags set per loop iteration (`{ tag: … }`). Gotchas: Playwright reads a bare two-element array or a bare function as an option value as a fixture, which is why the options are objects (`auth`, `consoleOptions`). `workerAuth` keeps state in the project's `outputDir/.auth/<parallelIndex>.json`; Playwright clears `outputDir` each run, so a run logs in once per worker and a restarted worker reuses the file.
+Lanes filter by tag, so they work with `test.fixme`, serial `describe`s and tags set per loop iteration (`{ tag: … }`). Gotchas: Playwright reads a bare two-element array or a bare function as an option value as a fixture, which is why the options are objects (`auth`, `consoleOptions`). `workerAuth` keeps state in the project's `outputDir/.auth/<index>-<email>.json`; Playwright clears `outputDir` each run, so a run logs in once per worker and a restarted worker reuses the file.
 
 ## Prettier
 

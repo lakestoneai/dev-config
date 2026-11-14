@@ -46,7 +46,7 @@ export function watchConsole(page, allow = []) {
 
 /**
  * Options (set with `test.use({...})` or in a project's `use`):
- *  - `auth: { accounts, login }` (an object: Playwright would treat a bare function option as a fixture)
+ *  - `auth: { accounts, login }` (`null` signs a spec out: `undefined` means "unset" and falls back to the config's) (an object: Playwright would treat a bare function option as a fixture)
  *      `accounts(index)`  the account for worker `parallelIndex`: `{ email, password, storageInit? }` (repo-supplied, unique per worker)
  *      `login(page, account)`  signs in on a clean page; the harness then saves the storage state
  *  - `consoleOptions: { allow: RegExp[] }`  console error texts that do not fail a test (an object, because Playwright reads
@@ -58,12 +58,10 @@ export const test = base.extend({
   auth: [undefined, { option: true, scope: 'worker' }],
   consoleOptions: [{ allow: [] }, { option: true }],
 
-  // Once per worker: sign in as accounts(parallelIndex), keep the state in the project's outputDir/.auth/<i>.json
-  // and reuse the file when it exists. undefined (no `auth`) leaves the config's storageState alone.
   // Once per worker: sign in as accounts(parallelIndex) and keep the state in outputDir/.auth/<index>-<email>.json,
   // reused when the file exists (a restarted worker). The account is in the name: a worker slot that is handed a
   // different `auth` (another role) must not pick up the previous role's login. Own timeout, so a slow
-  // sign-in does not spend the first test's budget. undefined (no `auth`) leaves the config's storageState alone.
+  // sign-in does not spend the first test's budget. undefined (no or null `auth`) leaves the config's storageState alone.
   workerAuth: [
     async ({ browser, auth }, use, workerInfo) => {
       if (!auth) return use(undefined)

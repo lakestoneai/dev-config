@@ -57,3 +57,14 @@ test.use({ auth })
   expect(r.out).toBe('')
   expect(r.code).toBe(0)
 })
+
+test('config use: { auth } with an E2EAuth variable compiles', () => {
+  const r =
+    tsc(`import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'
+import type { E2EAuth } from '@lakestoneai/dev-config/playwright/fixtures'
+const auth: E2EAuth = { accounts: (i) => ({ email: 'a' + i, password: 'p' }), login: async () => {} }
+export default defineE2EConfig({ use: { auth } })
+`)
+  expect(r.out).toBe('')
+  expect(r.code).toBe(0)
+})

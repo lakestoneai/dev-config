@@ -313,3 +313,62 @@ test('watchConsole: allow can match the failing URL', () => {
   handlers.console(msg('http://localhost:54321/rest/v1/quotes'))
   expect(w.errors.length).toBe(1)
 })
+
+// -- auth from the config's use, shared by every spec; a spec opts out with test.use({ auth: undefined })
+test('workerAuth: auth set in the config use applies to all specs; auth: null signs out', () => {
+  const d = project({
+    'playwright.config.ts': `import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'
+import { auth } from './auth'
+export default defineE2EConfig({ workers: 2, use: { auth } })
+`,
+    'auth.ts': `import type { E2EAuth } from '@lakestoneai/dev-config/playwright/fixtures'
+export const auth: E2EAuth = {
+  accounts: (i) => ({ email: 'user' + i + '@example.test', password: 'pw' }),
+  login: async (page, account) => {
+    await page.route('http://app.test/**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>app</p>' }))
+    await page.goto('http://app.test/')
+    await page.evaluate((e) => localStorage.setItem('who', e), account.email)
+  },
+}
+`,
+    'fixtures.ts': fx,
+    ...noSetup,
+    'in.spec.ts': `import { test, expect } from './fixtures'
+test('signed in', async ({ page }) => {
+  await page.route('http://app.test/**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>app</p>' }))
+  await page.goto('http://app.test/')
+  expect(await page.evaluate(() => localStorage.getItem('who'))).toMatch(/^user\\d@example.test$/)
+})
+`,
+    'out.spec.ts': `import { test, expect } from './fixtures'
+test.use({ auth: null })
+test('signed out', async ({ page }) => {
+  await page.route('http://app.test/**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>app</p>' }))
+  await page.goto('http://app.test/')
+  expect(await page.evaluate(() => localStorage.getItem('who'))).toBeNull()
+})
+`,
+  })
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.out).toContain('3 passed')
+  expect(r.code).toBe(0)
+})
+
+test('workerAuth: test.use({ auth: undefined }) is "unset": the config login still applies', () => {
+  const d = project({
+    'playwright.config.ts': `import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'
+import { auth } from './auth'
+export default defineE2EConfig({ workers: 1, use: { auth } })
+`,
+    'auth.ts': `import type { E2EAuth } from '@lakestoneai/dev-config/playwright/fixtures'
+export const auth: E2EAuth = { accounts: () => ({ email: 'u@example.test', password: 'pw' }), login: async () => {} }
+`,
+    'fixtures.ts': fx,
+    ...noSetup,
+    'a.spec.ts': `import { test, expect } from './fixtures'
+test.use({ auth: undefined })
+test('still signed in', async ({ storageState }) => { expect(String(storageState)).toContain('.auth/0-u') })
+`,
+  })
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+})
