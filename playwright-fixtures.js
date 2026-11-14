@@ -27,7 +27,7 @@ function sessionExpiries(state) {
   const chunks = new Map()
   for (const c of state.cookies ?? []) {
     if (!SESSION_KEY.test(c.name)) continue
-    const base = c.name.replace(/\.\d+$/, '')
+    const base = `${c.domain}|${c.path}|${c.name.replace(/\.\d+$/, '')}`
     chunks.set(base, [...(chunks.get(base) ?? []), c])
   }
   for (const list of chunks.values())
@@ -46,6 +46,7 @@ function sessionExpiries(state) {
     try {
       if (v.startsWith('base64-'))
         v = Buffer.from(v.slice(7), 'base64url').toString('utf8')
+      else if (v.startsWith('%')) v = decodeURIComponent(v) // URL-encoded JSON (older @supabase/ssr)
       const at = JSON.parse(v)?.expires_at
       if (typeof at === 'number') out.push(at)
     } catch {
@@ -54,6 +55,10 @@ function sessionExpiries(state) {
   }
   return out
 }
+
+// Files whose fresh login was already inside the margin (margin >= the project's jwt_expiry): re-logging in per test
+// would never help, so each is warned about once and then left alone. Per worker process.
+const marginTooLarge = new Set()
 
 /** True when a saved state holds a Supabase session that expires within `marginMs` (or already has). */
 function sessionStale(file, marginMs) {
@@ -148,8 +153,7 @@ export const test = base.extend({
         workerInfo.project.outputDir,
         `.auth/${id}-${who}.json`
       )
-      const margin = auth.sessionMarginMs ?? DEFAULT_SESSION_MARGIN_MS
-      if (!existsSync(file) || sessionStale(file, margin))
+      if (!existsSync(file))
         await login(browser, auth, account, file, workerInfo.project.use)
       await use(file)
     },
@@ -161,16 +165,20 @@ export const test = base.extend({
   // inside `auth.sessionMarginMs` (default 10 min) of expiring; the file is rewritten for the tests after it.
   storageState: [
     async ({ workerAuth, storageState, browser, auth }, use, testInfo) => {
+      const margin = auth?.sessionMarginMs ?? DEFAULT_SESSION_MARGIN_MS
       if (
         workerAuth &&
-        auth &&
-        sessionStale(
-          workerAuth,
-          auth.sessionMarginMs ?? DEFAULT_SESSION_MARGIN_MS
-        )
+        !marginTooLarge.has(workerAuth) &&
+        sessionStale(workerAuth, margin)
       ) {
         const account = await auth.accounts(testInfo.parallelIndex)
         await login(browser, auth, account, workerAuth, testInfo.project.use)
+        if (sessionStale(workerAuth, margin)) {
+          marginTooLarge.add(workerAuth)
+          console.warn(
+            `[dev-config] a fresh login is already inside sessionMarginMs (${margin} ms): lower auth.sessionMarginMs below the project's jwt_expiry; not re-logging in again for ${workerAuth}`
+          )
+        }
       }
       await use(workerAuth ?? storageState)
     },

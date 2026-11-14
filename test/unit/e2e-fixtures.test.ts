@@ -400,7 +400,11 @@ test('ok', async ({ page }) => { await page.setContent('<p>hi</p>') })
 // `store` is 'ls' (localStorage) or 'cookie' (chunked, base64- prefixed, as @supabase/ssr writes it).
 const sessionAuth = (
   offsets: number[],
-  { store = 'ls', margin = '', tests = 2 } = {}
+  { store = 'ls', margin = '', tests = 2 } = {} as {
+    store?: string
+    margin?: string
+    tests?: number
+  }
 ) => ({
   'playwright.config.ts': cfg().replace('workers: 2', 'workers: 1'),
   'fixtures.ts': fx,
@@ -420,12 +424,15 @@ test.use({ auth: {
     if (${JSON.stringify(store)} === 'ls') {
       await page.evaluate((s) => localStorage.setItem('sb-abc-auth-token', s), session)
     } else {
-      const v = 'base64-' + Buffer.from(session).toString('base64url')
-      const h = Math.ceil(v.length / 2)
-      await page.context().addCookies([
-        { name: 'sb-abc-auth-token.0', value: v.slice(0, h), url: 'http://app.test/' },
-        { name: 'sb-abc-auth-token.1', value: v.slice(h), url: 'http://app.test/' },
-      ])
+      const v = ${JSON.stringify(store)} === 'urlcookie' ? encodeURIComponent(session) : 'base64-' + Buffer.from(session).toString('base64url')
+      if (${JSON.stringify(store)} === 'twohosts')
+        await page.context().addCookies([{ name: 'sb-abc-auth-token', value: v, url: 'http://other.test/' }])
+      // 12 chunks: as text, .10 and .11 sort before .2, so the harness must order them numerically
+      const n = 12
+      const h = Math.ceil(v.length / n)
+      await page.context().addCookies(
+        Array.from({ length: n }, (_, i) => ({ name: 'sb-abc-auth-token.' + i, value: v.slice(i * h, (i + 1) * h), url: 'http://app.test/' })).reverse()
+      )
     }
   },
 } })
@@ -488,4 +495,22 @@ test('workerAuth: the session is also read from a chunked base64 cookie', () => 
   const d = project(sessionAuth([-60, 3600], { store: 'cookie' }))
   expect(playwright(d, ['--project=chromium']).code).toBe(0)
   expect(loginCount(d)).toBe(2)
+})
+test('workerAuth: a URL-encoded JSON cookie (older @supabase/ssr) is read', () => {
+  const d = project(sessionAuth([-60, 3600], { store: 'urlcookie' }))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+})
+test('workerAuth: the same cookie name on two hosts is judged per host, not concatenated', () => {
+  const d = project(sessionAuth([-60, 3600], { store: 'twohosts' }))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+})
+test('workerAuth: a margin larger than the session life warns once and stops re-logging in', () => {
+  // every login gives a 300 s session, the margin is 600 s: one re-login, a warning, then the state is left alone
+  const d = project(sessionAuth([300], { tests: 4 }))
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+  expect(r.out.match(/already inside sessionMarginMs/g)?.length).toBe(1)
 })
