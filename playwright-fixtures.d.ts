@@ -19,6 +19,8 @@ export interface E2EAuth {
   accounts: (index: number) => E2EAccount | Promise<E2EAccount>
   /** Signs in on a clean page; the harness then saves the state */
   login: (page: Page, account: E2EAccount) => Promise<void>
+  /** A saved Supabase session (`sb-*-auth-token`) expiring within this many ms is replaced by a fresh login, before each test. Default 600000 */
+  sessionMarginMs?: number
 }
 export interface ConsoleWatch {
   errors: string[]

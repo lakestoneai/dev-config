@@ -394,3 +394,156 @@ test('ok', async ({ page }) => { await page.setContent('<p>hi</p>') })
   expect(r.out).toContain('STEP>') // the reporter saw steps (e.g. the page fixture)
   expect(r.out).not.toContain('consoleGuard')
 })
+
+// -- workerAuth: a saved Supabase session near or past expiry is re-created, not reused (FLEET-133)
+// `login` writes a session whose expires_at is `now + offsets[n]` seconds on its n-th call (counter in logins.txt);
+// `store` is 'ls' (localStorage) or 'cookie' (chunked, base64- prefixed, as @supabase/ssr writes it).
+const sessionAuth = (
+  offsets: number[],
+  { store = 'ls', margin = '', tests = 2 } = {} as {
+    store?: string
+    margin?: string
+    tests?: number
+  }
+) => ({
+  'playwright.config.ts': cfg().replace('workers: 2', 'workers: 1'),
+  'fixtures.ts': fx,
+  ...noSetup,
+  'a.spec.ts': `import { test, expect } from './fixtures'
+import { appendFileSync, readFileSync, existsSync } from 'node:fs'
+const offsets = ${JSON.stringify(offsets)}
+test.use({ auth: {
+  ${margin}
+  accounts: () => ({ email: 'u@example.test', password: 'pw' }),
+  login: async (page) => {
+    const n = existsSync('logins.txt') ? readFileSync('logins.txt', 'utf8').trim().split('\\n').filter(Boolean).length : 0
+    appendFileSync('logins.txt', 'login' + n + '\\n')
+    const session = JSON.stringify({ access_token: 'a' + n, refresh_token: 'r' + n, expires_at: Math.floor(Date.now() / 1000) + offsets[Math.min(n, offsets.length - 1)] })
+    await page.route('http://app.test/**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>app</p>' }))
+    await page.goto('http://app.test/')
+    if (${JSON.stringify(store)} === 'ls') {
+      await page.evaluate((s) => localStorage.setItem('sb-abc-auth-token', s), session)
+    } else {
+      const v = ${JSON.stringify(store)} === 'urlcookie' ? encodeURIComponent(session) : 'base64-' + Buffer.from(session).toString('base64url')
+      if (${JSON.stringify(store)} === 'twohosts')
+        await page.context().addCookies([{ name: 'sb-abc-auth-token', value: v, url: 'http://other.test/' }])
+      // 12 chunks: as text, .10 and .11 sort before .2, so the harness must order them numerically
+      const n = 12
+      const h = Math.ceil(v.length / n)
+      await page.context().addCookies(
+        Array.from({ length: n }, (_, i) => ({ name: 'sb-abc-auth-token.' + i, value: v.slice(i * h, (i + 1) * h), url: 'http://app.test/' })).reverse()
+      )
+    }
+  },
+} })
+for (let i = 0; i < ${tests}; i++) {
+  test('test ' + i, async ({ page }) => {
+    await page.route('http://app.test/**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>app</p>' }))
+    await page.goto('http://app.test/')
+    if (${JSON.stringify(store)} === 'ls') {
+      const s = JSON.parse((await page.evaluate(() => localStorage.getItem('sb-abc-auth-token')))!)
+      appendFileSync('seen-token.txt', s.access_token + '\\n')
+    } else {
+      appendFileSync('seen-token.txt', 'cookie\\n')
+    }
+  })
+}
+`,
+})
+const loginCount = (d: string) =>
+  readFileSync(`${d}/logins.txt`, 'utf8').trim().split('\n').length
+const seenTokens = (d: string) =>
+  readFileSync(`${d}/seen-token.txt`, 'utf8').trim().split('\n')
+
+test('workerAuth: a session with a long life is reused, one login', () => {
+  const d = project(sessionAuth([3600]))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(1)
+})
+test('workerAuth: a session already expired is replaced before the first test', () => {
+  const d = project(sessionAuth([-60, 3600]))
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+  expect(seenTokens(d)).toEqual(['a1', 'a1']) // the tests run on the fresh session, never the expired one
+})
+test('workerAuth: a session inside the default 10 min margin is replaced', () => {
+  const d = project(sessionAuth([300, 3600]))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+})
+test('workerAuth: sessionMarginMs is configurable (a 5 min session is kept under a 1 min margin)', () => {
+  const d = project(sessionAuth([300], { margin: 'sessionMarginMs: 60_000,' }))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(1)
+})
+test('workerAuth: the session is also read from a chunked base64 cookie', () => {
+  const d = project(sessionAuth([-60, 3600], { store: 'cookie' }))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+})
+test('workerAuth: a URL-encoded JSON cookie (older @supabase/ssr) is read', () => {
+  const d = project(sessionAuth([-60, 3600], { store: 'urlcookie' }))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+})
+test('workerAuth: the same cookie name on two hosts is judged per host, not concatenated', () => {
+  const d = project(sessionAuth([-60, 3600], { store: 'twohosts' }))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+})
+test('workerAuth: a margin larger than the session life warns once and stops re-logging in', () => {
+  // every login gives a 300 s session, the margin is 600 s: one re-login, a warning, then the state is left alone
+  const d = project(sessionAuth([300], { tests: 4 }))
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+  expect(r.out.match(/already inside sessionMarginMs/g)?.length).toBe(1)
+})
+// No sleeps: the WSL wall clock can step back by seconds, so these tests never wait for time to pass. Test 0 rewrites
+// `expires_at` in the saved state file (the `storageState` path) to now + `afterSec`, and the next test's check is
+// decided by that data alone.
+const ageSavedSession = (
+  files: ReturnType<typeof sessionAuth>,
+  afterSec: number
+) => ({
+  ...files,
+  'a.spec.ts': files['a.spec.ts']
+    .replace(
+      "import { appendFileSync, readFileSync, existsSync } from 'node:fs'",
+      "import { appendFileSync, readFileSync, writeFileSync, existsSync } from 'node:fs'"
+    )
+    .replace('async ({ page }) => {', 'async ({ page, storageState }) => {')
+    .replace(
+      "appendFileSync('seen-token.txt', s.access_token + '\\n')",
+      `appendFileSync('seen-token.txt', s.access_token + '\\n')
+      if (i === 0) {
+        const st = JSON.parse(readFileSync(String(storageState), 'utf8'))
+        for (const o of st.origins) for (const e of o.localStorage)
+          if (e.name === 'sb-abc-auth-token')
+            e.value = JSON.stringify({ ...JSON.parse(e.value), expires_at: Math.floor(Date.now() / 1000) + ${afterSec} })
+        writeFileSync(String(storageState), JSON.stringify(st))
+      }`
+    ),
+})
+test('workerAuth: a session that ages into the margin during the run is replaced before the next test', () => {
+  // login gives 1 h; test 0 rewrites the saved expires_at to now + 1 s (inside the default 10 min margin)
+  const d = project(ageSavedSession(sessionAuth([3600]), 1))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+  expect(seenTokens(d)).toEqual(['a0', 'a1'])
+})
+test('workerAuth: after the margin warning, a session that really expires is still replaced', () => {
+  // logins give 300 s, 300 s, then 1 h; margin 600 s. The second login is still inside the margin, so the margin
+  // falls back to 0 (warn once). Test 0 rewrites expires_at to now - 60 s (expired): test 1 must start on a fresh login
+  const files = ageSavedSession(
+    sessionAuth([300, 300, 3600], { tests: 3 }),
+    -60
+  )
+  const d = project(files)
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.code).toBe(0)
+  expect(loginCount(d)).toBe(3)
+  expect(seenTokens(d)).toEqual(['a1', 'a2', 'a2'])
+  expect(r.out.match(/already inside sessionMarginMs/g)?.length).toBe(1)
+})
