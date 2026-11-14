@@ -54,6 +54,58 @@ test('real: @real only', () => {
     'setup › auth',
   ])
 })
+test('manual: @manual only (plus setup); no other lane runs it', () => {
+  expect(rows({ E2E_LANE: 'manual' })).toEqual([
+    'chromium › writes to vendor @manual',
+    'setup › auth',
+  ])
+  for (const lane of ['smoke', 'gate', 'full', 'real'])
+    expect(rows({ E2E_LANE: lane }).some((l) => l.includes('@manual'))).toBe(
+      false
+    )
+})
+test('manual lane: per-lane maps accept it; no CI limits by default', () => {
+  const c = (opts: string, env: Record<string, string> = {}) =>
+    resolved(opts, { E2E_LANE: 'manual', ...env })
+  expect(c('workers: { manual: 1 }').workers).toBe(1)
+  expect(c('', { CI: '1' }).maxFailures).toBe(0)
+  expect(c('', { CI: '1' }).globalTimeout).toBe(0)
+  expect(c('maxFailures: { manual: 2 }', { CI: '1' }).maxFailures).toBe(2)
+})
+test('an inherited property name is not a lane', () => {
+  for (const lane of [
+    'toString',
+    'constructor',
+    '__proto__',
+    'hasOwnProperty',
+  ]) {
+    const r = playwright(dir, ['--list'], { E2E_LANE: lane })
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain(`E2E_LANE=${lane} is not a lane`)
+  }
+})
+test("a repo project's own grepInvert is added to the lane's, never replaces it", () => {
+  const d = project({
+    'playwright.config.ts': config(
+      `projects: [{ name: 'own', testIgnore: /.*\\.setup\\.ts/, grepInvert: /@slow/ }]`
+    ),
+    'a.spec.ts': specs + `test('slow journey @slow', async () => {})\n`,
+  })
+  const own = (env: Record<string, string>) => listed(d, env).sort()
+  expect(own({})).toEqual([
+    'own › critical @smoke',
+    'own › narrow @mobile',
+    'own › narrow critical @mobile @smoke',
+    'own › plain journey',
+  ]) // gate: no @real, no @manual, and the repo's @slow is out too
+  expect(own({ E2E_LANE: 'manual' })).toEqual([
+    'own › writes to vendor @manual',
+  ])
+  expect(own({ E2E_LANE: 'full' }).some((l) => l.includes('@manual'))).toBe(
+    false
+  )
+  expect(own({ E2E_LANE: 'full' }).some((l) => l.includes('@slow'))).toBe(false)
+})
 test('an unknown lane is refused', () => {
   const r = playwright(dir, ['--list'], { E2E_LANE: 'nightly' })
   expect(r.code).not.toBe(0)
@@ -302,4 +354,98 @@ test("a repo's own setup project (a dependency) runs in every lane", () => {
   expect(
     listed(d, { E2E_LANE: 'smoke' }).filter((l) => l.startsWith('app'))
   ).toEqual(['app › critical @smoke', 'app › narrow critical @mobile @smoke'])
+})
+
+// -- 0.4.1: maxFailures, globalTimeout, github reporter
+test('maxFailures: CI per lane (smoke 3, gate 10, full/real 20), 0 outside CI; repo wins (value or per lane)', () => {
+  const mf = (opts: string, env: Record<string, string>) =>
+    resolved(opts, env).maxFailures
+  expect(mf('', { CI: '1', E2E_LANE: 'smoke' })).toBe(3)
+  expect(mf('', { CI: '1' })).toBe(10)
+  expect(mf('', { CI: '1', E2E_LANE: 'full' })).toBe(20)
+  expect(mf('', { CI: '1', E2E_LANE: 'real' })).toBe(20)
+  for (const lane of ['smoke', 'gate', 'full', 'real'])
+    expect(mf('', { E2E_LANE: lane })).toBe(0) // local runs want every failure
+  expect(mf('maxFailures: 1', { CI: '1' })).toBe(1)
+  expect(mf('maxFailures: 5', {})).toBe(5) // set explicitly, it applies locally too
+  expect(mf('maxFailures: { gate: 2 }', { CI: '1' })).toBe(2)
+  expect(mf('maxFailures: { default: 7 }', { CI: '1', E2E_LANE: 'full' })).toBe(
+    7
+  )
+  // a per-lane object without this lane keeps the lane default
+  expect(mf('maxFailures: { gate: 2 }', { CI: '1', E2E_LANE: 'smoke' })).toBe(3)
+})
+test('maxFailures stops the run after N failures and skips the rest', () => {
+  const d = project({
+    'playwright.config.ts': config('workers: 1, fullyParallel: false'),
+    'auth.setup.ts': setupSpec,
+    'f.spec.ts': `import { test } from '@playwright/test'
+for (let i = 1; i <= 6; i++) test('fail ' + i + ' @smoke', async () => { throw new Error('x') })
+`,
+  })
+  const r = playwright(d, ['--project=chromium'], {
+    CI: '1',
+    E2E_LANE: 'smoke',
+  })
+  expect(r.out).toContain('3 failed')
+  expect(r.out).toContain('did not run')
+})
+test('globalTimeout: per lane on CI (smoke 10 min, gate 60, full/real 120), unset off CI; repo wins', () => {
+  const gt = (opts: string, env: Record<string, string> = {}) =>
+    resolved(opts, env).globalTimeout
+  expect(gt('', { CI: '1', E2E_LANE: 'smoke' })).toBe(10 * 60_000)
+  expect(gt('', { CI: '1' })).toBe(60 * 60_000)
+  expect(gt('', { CI: '1', E2E_LANE: 'full' })).toBe(120 * 60_000)
+  expect(gt('', { CI: '1', E2E_LANE: 'real' })).toBe(120 * 60_000)
+  for (const lane of ['smoke', 'gate', 'full', 'real'])
+    expect(gt('', { E2E_LANE: lane })).toBe(0) // unset: Playwright reports 0 = no limit
+  expect(gt('globalTimeout: 5000')).toBe(5000) // set explicitly, it applies off CI too
+  expect(gt('globalTimeout: 5000', { CI: '1' })).toBe(5000)
+  expect(gt('globalTimeout: { gate: 7000 }')).toBe(7000)
+  expect(
+    gt('globalTimeout: { gate: 7000 }', { CI: '1', E2E_LANE: 'smoke' })
+  ).toBe(10 * 60_000)
+})
+test('a hung run ends at globalTimeout with the tests it finished', () => {
+  const d = project({
+    'playwright.config.ts': config('globalTimeout: 3000, timeout: 60000'),
+    'auth.setup.ts': setupSpec,
+    'h.spec.ts': `import { test } from '@playwright/test'
+test('hangs', async () => { await new Promise(() => {}) })
+`,
+  })
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.code).not.toBe(0)
+  expect(r.out).toContain('Timed out waiting 3s for the test suite to run')
+})
+test('github reporter only when GITHUB_ACTIONS', () => {
+  const names = (env: Record<string, string>) =>
+    resolved('', env).reporter.map((r: any[]) => r[0])
+  expect(names({})).not.toContain('github')
+  expect(names({ GITHUB_ACTIONS: 'true' })).toEqual(['list', 'github'])
+})
+
+test('blob reporter also on PLAYWRIGHT_BLOB_OUTPUT_FILE or E2E_BLOB=1, not only when sharded', () => {
+  const names = (env: Record<string, string>) =>
+    resolved('', env).reporter.map((r: any[]) => r[0])
+  expect(names({ PLAYWRIGHT_BLOB_OUTPUT_FILE: '/tmp/b/report-1.zip' })).toEqual(
+    ['list', 'blob']
+  )
+  expect(names({ E2E_BLOB: '1' })).toEqual(['list', 'blob'])
+  expect(names({ E2E_BLOB: '0' })).toEqual(['list'])
+  expect(names({})).toEqual(['list'])
+})
+
+// -- fixture projects must never be visible to `bun test` (a stale dir once made the suite import 119 of them)
+test('guard: a *.spec.ts inside a fixture project is not discovered by bun test', () => {
+  const d = project({
+    'leak.spec.ts': `import { test } from 'bun:test'\ntest('LEAKED', () => {})\n`,
+  })
+  const r = Bun.spawnSync(['bun', 'test', 'leak.spec.ts'], {
+    cwd: `${import.meta.dir}/../..`,
+  })
+  const out = r.stdout.toString() + r.stderr.toString()
+  expect(out).not.toContain('LEAKED')
+  expect(out).toContain('did not match any test files')
+  expect(d).toContain('/.e2e-tmp/')
 })

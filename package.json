@@ -1,6 +1,6 @@
 {
   "name": "@lakestoneai/dev-config",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Lakestone house defaults for code config: Playwright, Prettier, ESLint, tsconfig bases, the Renovate preset and a setup-bun CI action. Repos import these and keep only their own exceptions.",
   "license": "MIT",
   "type": "module",
@@ -21,6 +21,10 @@
       "types": "./playwright-fixtures.d.ts",
       "default": "./playwright-fixtures.js"
     },
+    "./playwright/shard-reporter": {
+      "types": "./playwright-shard-reporter.d.ts",
+      "default": "./playwright-shard-reporter.js"
+    },
     "./prettier": {
       "types": "./prettier.d.ts",
       "default": "./prettier.js"
@@ -38,6 +42,8 @@
     "playwright-preflight.d.ts",
     "playwright-fixtures.js",
     "playwright-fixtures.d.ts",
+    "playwright-shard-reporter.js",
+    "playwright-shard-reporter.d.ts",
     "prettier.js",
     "prettier.d.ts",
     "eslint.js",
