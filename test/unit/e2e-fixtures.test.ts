@@ -472,21 +472,6 @@ test('workerAuth: a session inside the default 10 min margin is replaced', () =>
   expect(playwright(d, ['--project=chromium']).code).toBe(0)
   expect(loginCount(d)).toBe(2)
 })
-test('workerAuth: a session that ages past the margin during the run is replaced before the next test', () => {
-  // life 68 s, margin 60 s: an 8 s window in which the first test's check still finds it fresh (a loaded machine
-  // has to stall 8 s to break that), then test 0 sleeps 9 s, so test 1 finds it inside the margin
-  const files = sessionAuth([68, 3600], {
-    margin: 'sessionMarginMs: 60_000,',
-  })
-  const spec = files['a.spec.ts'].replace(
-    "test('test ' + i, async ({ page }) => {",
-    "test('test ' + i, async ({ page }) => {\n    if (i === 0) await new Promise((r) => setTimeout(r, 9000))"
-  )
-  const e = project({ ...files, 'a.spec.ts': spec })
-  expect(playwright(e, ['--project=chromium']).code).toBe(0)
-  expect(loginCount(e)).toBe(2)
-  expect(seenTokens(e)).toEqual(['a0', 'a1'])
-})
 test('workerAuth: sessionMarginMs is configurable (a 5 min session is kept under a 1 min margin)', () => {
   const d = project(sessionAuth([300], { margin: 'sessionMarginMs: 60_000,' }))
   expect(playwright(d, ['--project=chromium']).code).toBe(0)
@@ -515,15 +500,47 @@ test('workerAuth: a margin larger than the session life warns once and stops re-
   expect(loginCount(d)).toBe(2)
   expect(r.out.match(/already inside sessionMarginMs/g)?.length).toBe(1)
 })
+// No sleeps: the WSL wall clock can step back by seconds, so these tests never wait for time to pass. Test 0 rewrites
+// `expires_at` in the saved state file (the `storageState` path) to now + `afterSec`, and the next test's check is
+// decided by that data alone.
+const ageSavedSession = (
+  files: ReturnType<typeof sessionAuth>,
+  afterSec: number
+) => ({
+  ...files,
+  'a.spec.ts': files['a.spec.ts']
+    .replace(
+      "import { appendFileSync, readFileSync, existsSync } from 'node:fs'",
+      "import { appendFileSync, readFileSync, writeFileSync, existsSync } from 'node:fs'"
+    )
+    .replace('async ({ page }) => {', 'async ({ page, storageState }) => {')
+    .replace(
+      "appendFileSync('seen-token.txt', s.access_token + '\\n')",
+      `appendFileSync('seen-token.txt', s.access_token + '\\n')
+      if (i === 0) {
+        const st = JSON.parse(readFileSync(String(storageState), 'utf8'))
+        for (const o of st.origins) for (const e of o.localStorage)
+          if (e.name === 'sb-abc-auth-token')
+            e.value = JSON.stringify({ ...JSON.parse(e.value), expires_at: Math.floor(Date.now() / 1000) + ${afterSec} })
+        writeFileSync(String(storageState), JSON.stringify(st))
+      }`
+    ),
+})
+test('workerAuth: a session that ages into the margin during the run is replaced before the next test', () => {
+  // login gives 1 h; test 0 rewrites the saved expires_at to now + 1 s (inside the default 10 min margin)
+  const d = project(ageSavedSession(sessionAuth([3600]), 1))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+  expect(seenTokens(d)).toEqual(['a0', 'a1'])
+})
 test('workerAuth: after the margin warning, a session that really expires is still replaced', () => {
-  // logins give 300 s, then 8 s, then 1 h; margin 600 s. The 8 s session is inside the margin, so the margin
-  // falls back to 0 (warn once); it expires during test 0 (which sleeps 10 s), so test 1 must start on a fresh login, not the dead one
-  const files = sessionAuth([300, 8, 3600], { tests: 3 })
-  const spec = files['a.spec.ts'].replace(
-    "test('test ' + i, async ({ page }) => {",
-    "test('test ' + i, async ({ page }) => {\n    if (i === 0) await new Promise((r) => setTimeout(r, 10000))"
+  // logins give 300 s, 300 s, then 1 h; margin 600 s. The second login is still inside the margin, so the margin
+  // falls back to 0 (warn once). Test 0 rewrites expires_at to now - 60 s (expired): test 1 must start on a fresh login
+  const files = ageSavedSession(
+    sessionAuth([300, 300, 3600], { tests: 3 }),
+    -60
   )
-  const d = project({ ...files, 'a.spec.ts': spec })
+  const d = project(files)
   const r = playwright(d, ['--project=chromium'])
   expect(r.code).toBe(0)
   expect(loginCount(d)).toBe(3)
