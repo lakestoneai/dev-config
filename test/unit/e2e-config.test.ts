@@ -64,6 +64,24 @@ test('manual: @manual only (plus setup); no other lane runs it', () => {
       false
     )
 })
+test('@manual combined with @real or @smoke (own or inherited) runs only in the manual lane', () => {
+  const d = project({
+    'playwright.config.ts': config(),
+    'auth.setup.ts': setupSpec,
+    'm.spec.ts': `import { test } from '@playwright/test'
+test('real and manual', { tag: ['@real', '@manual'] }, async () => {})
+test('smoke and manual', { tag: ['@smoke', '@manual'] }, async () => {})
+test.describe('inherits real', { tag: '@real' }, () => {
+  test('run now', { tag: '@manual' }, async () => {})
+})
+`,
+  })
+  const inManual = (lane: string) =>
+    listed(d, { E2E_LANE: lane }).filter((l) => !l.startsWith('setup'))
+  expect(inManual('manual')).toHaveLength(3)
+  for (const lane of ['smoke', 'gate', 'full', 'real'])
+    expect(inManual(lane)).toEqual([])
+})
 test('manual lane: per-lane maps accept it; no CI limits by default', () => {
   const c = (opts: string, env: Record<string, string> = {}) =>
     resolved(opts, { E2E_LANE: 'manual', ...env })

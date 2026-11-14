@@ -168,11 +168,17 @@ export function defineE2EConfig(opts = {}) {
 // /@real/ would also drop a title containing agent@realestate.com or a tag like @realtime.
 const tag = (t) => `(?:^|\\s)${t}(?=\\s|$)`
 const LANES = {
-  smoke: { grep: new RegExp(tag('@smoke')) },
+  smoke: {
+    grep: new RegExp(tag('@smoke')),
+    grepInvert: new RegExp(tag('@manual')),
+  },
   gate: { grepInvert: new RegExp(`${tag('@real')}|${tag('@manual')}`) },
   full: { grepInvert: new RegExp(tag('@manual')) },
-  real: { grep: new RegExp(tag('@real')) },
-  // @manual specs write to a vendor/sandbox: no other lane runs them, and a CLI --grep cannot override a lane filter
+  real: {
+    grep: new RegExp(tag('@real')),
+    grepInvert: new RegExp(tag('@manual')),
+  },
+  // @manual specs write to a vendor/sandbox: no other lane runs them (even one also tagged @smoke/@real), and a CLI --grep cannot override a lane filter
   manual: { grep: new RegExp(tag('@manual')) },
 }
 
