@@ -473,13 +473,14 @@ test('workerAuth: a session inside the default 10 min margin is replaced', () =>
   expect(loginCount(d)).toBe(2)
 })
 test('workerAuth: a session that ages past the margin during the run is replaced before the next test', () => {
-  // life 640 s, margin 639 s: fresh at the first test, inside the margin for the second 2+ s later
-  const files = sessionAuth([640, 3600], {
-    margin: 'sessionMarginMs: 639_000,',
+  // life 68 s, margin 60 s: an 8 s window in which the first test's check still finds it fresh (a loaded machine
+  // has to stall 8 s to break that), then test 0 sleeps 9 s, so test 1 finds it inside the margin
+  const files = sessionAuth([68, 3600], {
+    margin: 'sessionMarginMs: 60_000,',
   })
   const spec = files['a.spec.ts'].replace(
     "test('test ' + i, async ({ page }) => {",
-    "test('test ' + i, async ({ page }) => {\n    await new Promise((r) => setTimeout(r, 2500))"
+    "test('test ' + i, async ({ page }) => {\n    if (i === 0) await new Promise((r) => setTimeout(r, 9000))"
   )
   const e = project({ ...files, 'a.spec.ts': spec })
   expect(playwright(e, ['--project=chromium']).code).toBe(0)
@@ -515,12 +516,12 @@ test('workerAuth: a margin larger than the session life warns once and stops re-
   expect(r.out.match(/already inside sessionMarginMs/g)?.length).toBe(1)
 })
 test('workerAuth: after the margin warning, a session that really expires is still replaced', () => {
-  // logins give 300 s, then 3 s, then 1 h; margin 600 s. The 3 s session is inside the margin, so the margin
-  // falls back to 0 (warn once); it expires during test 0, so test 1 must start on a fresh login, not the dead one
-  const files = sessionAuth([300, 3, 3600], { tests: 3 })
+  // logins give 300 s, then 8 s, then 1 h; margin 600 s. The 8 s session is inside the margin, so the margin
+  // falls back to 0 (warn once); it expires during test 0 (which sleeps 10 s), so test 1 must start on a fresh login, not the dead one
+  const files = sessionAuth([300, 8, 3600], { tests: 3 })
   const spec = files['a.spec.ts'].replace(
     "test('test ' + i, async ({ page }) => {",
-    "test('test ' + i, async ({ page }) => {\n    await new Promise((r) => setTimeout(r, 4000))"
+    "test('test ' + i, async ({ page }) => {\n    if (i === 0) await new Promise((r) => setTimeout(r, 10000))"
   )
   const d = project({ ...files, 'a.spec.ts': spec })
   const r = playwright(d, ['--project=chromium'])
