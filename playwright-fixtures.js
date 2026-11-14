@@ -18,7 +18,7 @@ const isFaviconFailure = (msg) =>
  * `<message text> @ <url>` (the URL is the message location: for a failed request, the request URL).
  * Chromium also reports every failed network request (a 401 from a wrong-password test, a 404) as
  * `console.error: Failed to load resource: … status of 401`, which fails the test: allow the ones a test expects
- * (`/status of 401 \\(\\) @ .*\\/auth\\//`). A missing favicon is ignored by default.
+ * (`/status of 401\b.* @ .*\/auth\/v1\//`; real Chromium text is `… status of 401 (Unauthorized)`). A missing favicon is ignored by default.
  * `check()` throws one error listing them. The `consoleGuard` fixture uses it for the test's pages; call it
  * yourself for a page the guard cannot see (e.g. one from a separately created browser context).
  */

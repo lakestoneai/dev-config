@@ -119,7 +119,7 @@ export function defineE2EConfig(opts = {}) {
     workers: perLane(workers),
     // CI smoke retries once by default: failOnFlakyTests only sees a flaky test if a retry can pass it
     ...(() => {
-      const r = retries === undefined ? ciSmokeRetry : perLane(retries)
+      const r = perLane(retries) ?? ciSmokeRetry
       return r !== undefined && { retries: r }
     })(),
     // E2E_OUTPUT_DIR beats the repo's outputDir: parallel stacks of one repo need separate result folders
@@ -133,6 +133,7 @@ export function defineE2EConfig(opts = {}) {
     use,
     projects,
     ...repo,
+    ...(repo.projects && { projects: exemptDependencies(repo.projects) }),
   })
 }
 
@@ -144,4 +145,15 @@ const LANES = {
   gate: { grepInvert: new RegExp(`${tag('@real')}|${tag('@manual')}`) },
   full: { grepInvert: new RegExp(tag('@manual')) },
   real: { grep: new RegExp(tag('@real')) },
+}
+
+// The config-level lane filter reaches a repo's own projects. A project that another one depends on (a setup
+// project) must always run, or its dependants start without it: give it the same match-everything filter.
+function exemptDependencies(projects) {
+  const needed = new Set(projects.flatMap((p) => p.dependencies ?? []))
+  return projects.map((p) =>
+    needed.has(p.name) && !p.grep && !p.grepInvert
+      ? { ...p, grep: /./, grepInvert: /(?!)/ }
+      : p
+  )
 }

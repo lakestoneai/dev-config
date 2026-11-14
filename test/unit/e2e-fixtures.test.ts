@@ -301,11 +301,11 @@ test('watchConsole: allow can match the failing URL', () => {
   const page = {
     on: (e: string, h: (m: unknown) => void) => void (handlers[e] = h),
   }
-  const w = watchConsole(page as never, [/status of 401 \(\) @ .*\/auth\/v1\//])
+  const w = watchConsole(page as never, [/status of 401\b.* @ .*\/auth\/v1\//])
   const msg = (url: string) => ({
     type: () => 'error',
     text: () =>
-      'Failed to load resource: the server responded with a status of 401 ()',
+      'Failed to load resource: the server responded with a status of 401 (Unauthorized)',
     location: () => ({ url }),
   })
   handlers.console(msg('http://localhost:54321/auth/v1/token'))

@@ -60,7 +60,7 @@ export function preflight(checks, { timeoutMs = 20_000 } = {}) {
   return async function globalSetup() {
     let timer
     const deadline = new Promise((resolve) => {
-      timer = setTimeout(resolve, timeoutMs, DEADLINE)
+      timer = setTimeout(resolve, timeoutMs)
     })
     const results = await Promise.all(
       checks.map(({ fn }) =>
@@ -88,5 +88,3 @@ export function preflight(checks, { timeoutMs = 20_000 } = {}) {
     }
   }
 }
-
-const DEADLINE = Symbol('deadline')

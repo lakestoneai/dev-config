@@ -268,8 +268,9 @@ test('CI smoke retries once by default; gate and local do not; opts win', () => 
   expect(retries('', { CI: '1' })).toBe(0)
   expect(retries('', { E2E_LANE: 'smoke' })).toBe(0)
   expect(retries('retries: 0', { CI: '1', E2E_LANE: 'smoke' })).toBe(0)
+  // a per-lane object without a smoke key keeps the CI smoke default
   expect(retries('retries: { gate: 2 }', { CI: '1', E2E_LANE: 'smoke' })).toBe(
-    0
+    1
   )
 })
 
@@ -284,4 +285,21 @@ test("a repo's own project still runs only its lane", () => {
     'extra › narrow critical @mobile @smoke',
   ])
   expect(listed(d).some((l) => /@real|@manual/.test(l))).toBe(false)
+})
+
+// -- a repo's own setup project is exempt from the lane too
+test("a repo's own setup project (a dependency) runs in every lane", () => {
+  const d = project({
+    'playwright.config.ts': config(
+      `projects: [{ name: 'repo-setup', testMatch: /.*\\.setup\\.ts/ }, { name: 'app', testIgnore: /.*\\.setup\\.ts/, dependencies: ['repo-setup'] }, { name: 'tagged', testIgnore: /.*\\.setup\\.ts/, grep: /@smoke/ }]`
+    ),
+    'auth.setup.ts': setupSpec,
+    'a.spec.ts': specs,
+  })
+  for (const lane of ['smoke', 'real', 'gate', 'full']) {
+    expect(listed(d, { E2E_LANE: lane })).toContain('repo-setup › auth')
+  }
+  expect(
+    listed(d, { E2E_LANE: 'smoke' }).filter((l) => l.startsWith('app'))
+  ).toEqual(['app › critical @smoke', 'app › narrow critical @mobile @smoke'])
 })
