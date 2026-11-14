@@ -159,7 +159,7 @@ export function defineE2EConfig(opts = {}) {
     projects,
     ...repo,
     ...(repo.projects && {
-      projects: exemptDependencies(repo.projects, grepInvert),
+      projects: exemptDependencies(repo.projects, grep, grepInvert),
     }),
   })
 }
@@ -168,27 +168,41 @@ export function defineE2EConfig(opts = {}) {
 // /@real/ would also drop a title containing agent@realestate.com or a tag like @realtime.
 const tag = (t) => `(?:^|\\s)${t}(?=\\s|$)`
 const LANES = {
-  smoke: { grep: new RegExp(tag('@smoke')) },
+  smoke: {
+    grep: new RegExp(tag('@smoke')),
+    grepInvert: new RegExp(tag('@manual')),
+  },
   gate: { grepInvert: new RegExp(`${tag('@real')}|${tag('@manual')}`) },
   full: { grepInvert: new RegExp(tag('@manual')) },
-  real: { grep: new RegExp(tag('@real')) },
-  // @manual specs write to a vendor/sandbox: no other lane runs them, and a CLI --grep cannot override a lane filter
+  real: {
+    grep: new RegExp(tag('@real')),
+    grepInvert: new RegExp(tag('@manual')),
+  },
+  // @manual specs write to a vendor/sandbox: no other lane runs them (even one also tagged @smoke/@real), and a CLI --grep cannot override a lane filter
   manual: { grep: new RegExp(tag('@manual')) },
 }
 
 // The config-level lane filter reaches a repo's own projects. A project that another one depends on (a setup
 // project) must always run, or its dependants start without it: give it the same match-everything filter.
-function exemptDependencies(projects, laneInvert) {
+function exemptDependencies(projects, laneGrep, laneInvert) {
   const needed = new Set(projects.flatMap((p) => p.dependencies ?? []))
   return projects.map((p) => {
     if (needed.has(p.name) && !p.grep && !p.grepInvert)
       return { ...p, grep: /./, grepInvert: /(?!)/ }
+    // a project's own grep replaces the config-level one too: AND them, so the lane (smoke/real) still filters
+    if (laneGrep && p.grep instanceof RegExp && !needed.has(p.name))
+      p = { ...p, grep: allOf(p.grep, laneGrep) }
     // a project's own grepInvert replaces the config-level one in Playwright: keep the lane's exclusions (@manual, @real) too
     if (laneInvert && p.grepInvert && !needed.has(p.name))
       return { ...p, grepInvert: anyOf(p.grepInvert, laneInvert) }
     return p
   })
 }
+const allOf = (a, b) =>
+  new RegExp(
+    `(?=.*(?:${a.source}))(?=.*(?:${b.source}))`,
+    [...new Set(a.flags + b.flags)].join('')
+  )
 const anyOf = (a, b) =>
   new RegExp(
     `(?:${a.source})|(?:${b.source})`,

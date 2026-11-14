@@ -64,6 +64,24 @@ test('manual: @manual only (plus setup); no other lane runs it', () => {
       false
     )
 })
+test('@manual combined with @real or @smoke (own or inherited) runs only in the manual lane', () => {
+  const d = project({
+    'playwright.config.ts': config(),
+    'auth.setup.ts': setupSpec,
+    'm.spec.ts': `import { test } from '@playwright/test'
+test('real and manual', { tag: ['@real', '@manual'] }, async () => {})
+test('smoke and manual', { tag: ['@smoke', '@manual'] }, async () => {})
+test.describe('inherits real', { tag: '@real' }, () => {
+  test('run now', { tag: '@manual' }, async () => {})
+})
+`,
+  })
+  const inManual = (lane: string) =>
+    listed(d, { E2E_LANE: lane }).filter((l) => !l.startsWith('setup'))
+  expect(inManual('manual')).toHaveLength(3)
+  for (const lane of ['smoke', 'gate', 'full', 'real'])
+    expect(inManual(lane)).toEqual([])
+})
 test('manual lane: per-lane maps accept it; no CI limits by default', () => {
   const c = (opts: string, env: Record<string, string> = {}) =>
     resolved(opts, { E2E_LANE: 'manual', ...env })
@@ -105,6 +123,26 @@ test("a repo project's own grepInvert is added to the lane's, never replaces it"
     false
   )
   expect(own({ E2E_LANE: 'full' }).some((l) => l.includes('@slow'))).toBe(false)
+})
+test("a repo project's own grep is ANDed with the lane's grep, never replaces it", () => {
+  const d = project({
+    'playwright.config.ts': config(
+      `projects: [{ name: 'api', testIgnore: /.*\\.setup\\.ts/, grep: /@api/ }]`
+    ),
+    'a.spec.ts': `import { test } from '@playwright/test'
+test('plain @api', async () => {})
+test('critical @api @smoke', async () => {})
+test('vendor @api @real', async () => {})
+test('other @smoke', async () => {})
+test('other @real', async () => {})
+`,
+  })
+  const api = (env: Record<string, string>) => listed(d, env).sort()
+  expect(api({ E2E_LANE: 'smoke' })).toEqual(['api › critical @api @smoke'])
+  expect(api({ E2E_LANE: 'real' })).toEqual(['api › vendor @api @real'])
+  // lanes without a grep leave the repo's own grep alone
+  expect(api({ E2E_LANE: 'full' })).toHaveLength(3)
+  expect(api({})).toEqual(['api › critical @api @smoke', 'api › plain @api'])
 })
 test('an unknown lane is refused', () => {
   const r = playwright(dir, ['--list'], { E2E_LANE: 'nightly' })
