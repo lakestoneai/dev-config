@@ -1,6 +1,6 @@
 {
   "name": "@lakestoneai/dev-config",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Lakestone house defaults for code config: Playwright, Prettier, ESLint, tsconfig bases, the Renovate preset and a setup-bun CI action. Repos import these and keep only their own exceptions.",
   "license": "MIT",
   "type": "module",

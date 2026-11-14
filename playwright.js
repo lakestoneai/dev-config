@@ -9,12 +9,13 @@ import { fileURLToPath } from 'node:url'
 const SHARD_REPORTER = fileURLToPath(
   new URL('./playwright-shard-reporter.js', import.meta.url)
 )
-const MAX_FAILURES = { smoke: 3, gate: 10, full: 20, real: 20 }
+const MAX_FAILURES = { smoke: 3, gate: 10, full: 20, real: 20, manual: 0 }
 const GLOBAL_TIMEOUT = {
   smoke: 10 * 60_000,
   gate: 60 * 60_000,
   full: 120 * 60_000,
   real: 120 * 60_000,
+  manual: undefined,
 }
 
 /** @type {import('@playwright/test').PlaywrightTestConfig} */
@@ -35,7 +36,7 @@ export const playwrightDefaults = {
  * `timeout`, `use`, `expect`, `reporter`, `projects`…), so a repo's key always wins; a `projects` array
  * replaces the harness projects. `use` is shallow-merged over the harness `use`.
  *
- * `workers`, `retries` (default 1 on CI in the smoke lane), `fullyParallel`, `maxFailures` and `globalTimeout` take a value or `{ default, smoke, gate, full, real }`.
+ * `workers`, `retries` (default 1 on CI in the smoke lane), `fullyParallel`, `maxFailures` and `globalTimeout` take a value or `{ default, smoke, gate, full, real, manual }`.
  * `outputDir` is overridden by env E2E_OUTPUT_DIR (separate result folders for parallel stacks).
  *
  * Projects: `setup` (`*.setup.ts`) -> `chromium` (1440x900, `storageState`, depends on setup) -> optional `mobile`
@@ -68,7 +69,7 @@ export function defineE2EConfig(opts = {}) {
     )
   }
   const { grep, grepInvert } = LANES[lane]
-  // workers / retries / fullyParallel: a value, or { default, smoke, gate, full, real } to differ per lane
+  // workers / retries / fullyParallel: a value, or { default, smoke, gate, full, real, manual } to differ per lane
   const perLane = (v) =>
     v !== null && typeof v === 'object' ? (v[lane] ?? v.default) : v
   const ciSmokeRetry = env.CI && lane === 'smoke' ? 1 : undefined
@@ -147,7 +148,9 @@ export function defineE2EConfig(opts = {}) {
     }),
     // Stop a red run early: CI only (a dev healing specs wants every failure); a repo's value wins, locally too
     maxFailures: perLane(maxFailures) ?? (env.CI ? MAX_FAILURES[lane] : 0),
-    globalTimeout: perLane(globalTimeout) ?? GLOBAL_TIMEOUT[lane],
+    // CI only: an unsharded local gate run can legitimately outlast an hour
+    globalTimeout:
+      perLane(globalTimeout) ?? (env.CI ? GLOBAL_TIMEOUT[lane] : undefined),
     ...filter, // a repo's own projects inherit the lane
     reporter,
     failOnFlakyTests: !!env.CI && lane === 'smoke',
@@ -167,6 +170,8 @@ const LANES = {
   gate: { grepInvert: new RegExp(`${tag('@real')}|${tag('@manual')}`) },
   full: { grepInvert: new RegExp(tag('@manual')) },
   real: { grep: new RegExp(tag('@real')) },
+  // @manual specs write to a vendor/sandbox: no other lane runs them, and a CLI --grep cannot override a lane filter
+  manual: { grep: new RegExp(tag('@manual')) },
 }
 
 // The config-level lane filter reaches a repo's own projects. A project that another one depends on (a setup

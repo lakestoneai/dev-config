@@ -8,7 +8,7 @@ export declare const playwrightDefaults: PlaywrightTestConfig
 import type { E2EAuth } from './playwright-fixtures.js'
 
 export type PerLane<T> =
-  T | { default?: T; smoke?: T; gate?: T; full?: T; real?: T }
+  T | { default?: T; smoke?: T; gate?: T; full?: T; real?: T; manual?: T }
 
 export interface E2EOptions extends Omit<
   PlaywrightTestConfig,
@@ -28,7 +28,7 @@ export interface E2EOptions extends Omit<
   retries?: PerLane<number>
   /** Stop after N failed tests. Default on CI: smoke 3, gate 10, full/real 20; 0 (off) outside CI; or per lane */
   maxFailures?: PerLane<number>
-  /** Whole-run limit in ms. Default: smoke 10 min, gate 60, full/real 120; or per lane */
+  /** Whole-run limit in ms. Default on CI only: smoke 10 min, gate 60, full/real 120 (unset otherwise); or per lane */
   globalTimeout?: PerLane<number>
   /** Path of a global setup file, e.g. one that default-exports `preflight([...])` */
   globalSetup?: string

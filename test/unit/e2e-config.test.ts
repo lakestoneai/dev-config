@@ -54,6 +54,24 @@ test('real: @real only', () => {
     'setup › auth',
   ])
 })
+test('manual: @manual only (plus setup); no other lane runs it', () => {
+  expect(rows({ E2E_LANE: 'manual' })).toEqual([
+    'chromium › writes to vendor @manual',
+    'setup › auth',
+  ])
+  for (const lane of ['smoke', 'gate', 'full', 'real'])
+    expect(rows({ E2E_LANE: lane }).some((l) => l.includes('@manual'))).toBe(
+      false
+    )
+})
+test('manual lane: per-lane maps accept it; no CI limits by default', () => {
+  const c = (opts: string, env: Record<string, string> = {}) =>
+    resolved(opts, { E2E_LANE: 'manual', ...env })
+  expect(c('workers: { manual: 1 }').workers).toBe(1)
+  expect(c('', { CI: '1' }).maxFailures).toBe(0)
+  expect(c('', { CI: '1' }).globalTimeout).toBe(0)
+  expect(c('maxFailures: { manual: 2 }', { CI: '1' }).maxFailures).toBe(2)
+})
 test('an unknown lane is refused', () => {
   const r = playwright(dir, ['--list'], { E2E_LANE: 'nightly' })
   expect(r.code).not.toBe(0)
@@ -338,18 +356,21 @@ for (let i = 1; i <= 6; i++) test('fail ' + i + ' @smoke', async () => { throw n
   expect(r.out).toContain('3 failed')
   expect(r.out).toContain('did not run')
 })
-test('globalTimeout per lane: smoke 10 min, gate 60, full/real 120; repo wins', () => {
+test('globalTimeout: per lane on CI (smoke 10 min, gate 60, full/real 120), unset off CI; repo wins', () => {
   const gt = (opts: string, env: Record<string, string> = {}) =>
     resolved(opts, env).globalTimeout
-  expect(gt('', { E2E_LANE: 'smoke' })).toBe(10 * 60_000)
-  expect(gt('')).toBe(60 * 60_000)
-  expect(gt('', { E2E_LANE: 'full' })).toBe(120 * 60_000)
-  expect(gt('', { E2E_LANE: 'real' })).toBe(120 * 60_000)
-  expect(gt('globalTimeout: 5000')).toBe(5000)
+  expect(gt('', { CI: '1', E2E_LANE: 'smoke' })).toBe(10 * 60_000)
+  expect(gt('', { CI: '1' })).toBe(60 * 60_000)
+  expect(gt('', { CI: '1', E2E_LANE: 'full' })).toBe(120 * 60_000)
+  expect(gt('', { CI: '1', E2E_LANE: 'real' })).toBe(120 * 60_000)
+  for (const lane of ['smoke', 'gate', 'full', 'real'])
+    expect(gt('', { E2E_LANE: lane })).toBe(0) // unset: Playwright reports 0 = no limit
+  expect(gt('globalTimeout: 5000')).toBe(5000) // set explicitly, it applies off CI too
+  expect(gt('globalTimeout: 5000', { CI: '1' })).toBe(5000)
   expect(gt('globalTimeout: { gate: 7000 }')).toBe(7000)
-  expect(gt('globalTimeout: { gate: 7000 }', { E2E_LANE: 'smoke' })).toBe(
-    10 * 60_000
-  )
+  expect(
+    gt('globalTimeout: { gate: 7000 }', { CI: '1', E2E_LANE: 'smoke' })
+  ).toBe(10 * 60_000)
 })
 test('a hung run ends at globalTimeout with the tests it finished', () => {
   const d = project({
