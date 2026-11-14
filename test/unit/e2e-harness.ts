@@ -28,6 +28,10 @@ export function playwright(
     'E2E_SHARD',
     'E2E_REPORT_DIR',
     'CI',
+    'GITHUB_ACTIONS',
+    'E2E_SHARD_TIMINGS',
+    'E2E_BLOB',
+    'PLAYWRIGHT_BLOB_OUTPUT_FILE',
   ])
     delete clean[k]
   const r = Bun.spawnSync(['bunx', 'playwright', 'test', ...args], {

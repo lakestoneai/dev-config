@@ -4,6 +4,18 @@
 // Playwright's own default for both timeouts is 0 = wait forever, which hangs agents and scripted runs
 // (they have no per-test timeout).
 import { defineConfig, devices } from '@playwright/test'
+import { fileURLToPath } from 'node:url'
+
+const SHARD_REPORTER = fileURLToPath(
+  new URL('./playwright-shard-reporter.js', import.meta.url)
+)
+const MAX_FAILURES = { smoke: 3, gate: 10, full: 20, real: 20 }
+const GLOBAL_TIMEOUT = {
+  smoke: 10 * 60_000,
+  gate: 60 * 60_000,
+  full: 120 * 60_000,
+  real: 120 * 60_000,
+}
 
 /** @type {import('@playwright/test').PlaywrightTestConfig} */
 export const playwrightDefaults = {
@@ -23,7 +35,7 @@ export const playwrightDefaults = {
  * `timeout`, `use`, `expect`, `reporter`, `projects`…), so a repo's key always wins; a `projects` array
  * replaces the harness projects. `use` is shallow-merged over the harness `use`.
  *
- * `workers`, `retries` (default 1 on CI in the smoke lane) and `fullyParallel` take a value or `{ default, smoke, gate, full, real }`.
+ * `workers`, `retries` (default 1 on CI in the smoke lane), `fullyParallel`, `maxFailures` and `globalTimeout` take a value or `{ default, smoke, gate, full, real }`.
  * `outputDir` is overridden by env E2E_OUTPUT_DIR (separate result folders for parallel stacks).
  *
  * Projects: `setup` (`*.setup.ts`) -> `chromium` (1440x900, `storageState`, depends on setup) -> optional `mobile`
@@ -39,6 +51,8 @@ export function defineE2EConfig(opts = {}) {
     workers = 4,
     fullyParallel = true,
     retries,
+    maxFailures,
+    globalTimeout,
     outputDir,
     globalSetup,
     video,
@@ -63,7 +77,12 @@ export function defineE2EConfig(opts = {}) {
     !!env.E2E_SHARD || process.argv.some((a) => a.startsWith('--shard'))
 
   const reporter = [['list']]
-  if (sharded) reporter.push(['blob'])
+  if (env.GITHUB_ACTIONS) reporter.push(['github']) // inline annotations on the PR check
+  // blob: sharded runs, and any run a merge step will read (a runner that splits by file lists passes no --shard)
+  if (sharded || env.PLAYWRIGHT_BLOB_OUTPUT_FILE || env.E2E_BLOB === '1')
+    reporter.push(['blob'])
+  // Opt-in duration-aware sharding: E2E_SHARD_TIMINGS = a previous JSON report. Absent (or no --shard), Playwright's own count sharding runs.
+  if (sharded && env.E2E_SHARD_TIMINGS) reporter.push([SHARD_REPORTER])
   if (env.E2E_REPORT_DIR) {
     reporter.push(
       ['html', { outputFolder: `${env.E2E_REPORT_DIR}/html`, open: 'never' }],
@@ -126,6 +145,9 @@ export function defineE2EConfig(opts = {}) {
     ...((env.E2E_OUTPUT_DIR || outputDir) && {
       outputDir: env.E2E_OUTPUT_DIR || outputDir,
     }),
+    // Stop a red run early: CI only (a dev healing specs wants every failure); a repo's value wins, locally too
+    maxFailures: perLane(maxFailures) ?? (env.CI ? MAX_FAILURES[lane] : 0),
+    globalTimeout: perLane(globalTimeout) ?? GLOBAL_TIMEOUT[lane],
     ...filter, // a repo's own projects inherit the lane
     reporter,
     failOnFlakyTests: !!env.CI && lane === 'smoke',

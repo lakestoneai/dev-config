@@ -115,7 +115,8 @@ export const test = base.extend({
       if (errors.length)
         throw new Error(`Console errors during the test:\n${errors.join('\n')}`)
     },
-    { auto: true },
+    // box: the fixture's own step stays out of every report and trace
+    { auto: true, box: true },
   ],
 
   // owned('Quote') -> 'Quote-w2-a1b2c3d4-1', then -2…: unique per worker, test and call, so parallel tests never share rows.

@@ -303,3 +303,80 @@ test("a repo's own setup project (a dependency) runs in every lane", () => {
     listed(d, { E2E_LANE: 'smoke' }).filter((l) => l.startsWith('app'))
   ).toEqual(['app › critical @smoke', 'app › narrow critical @mobile @smoke'])
 })
+
+// -- 0.4.1: maxFailures, globalTimeout, github reporter
+test('maxFailures: CI per lane (smoke 3, gate 10, full/real 20), 0 outside CI; repo wins (value or per lane)', () => {
+  const mf = (opts: string, env: Record<string, string>) =>
+    resolved(opts, env).maxFailures
+  expect(mf('', { CI: '1', E2E_LANE: 'smoke' })).toBe(3)
+  expect(mf('', { CI: '1' })).toBe(10)
+  expect(mf('', { CI: '1', E2E_LANE: 'full' })).toBe(20)
+  expect(mf('', { CI: '1', E2E_LANE: 'real' })).toBe(20)
+  for (const lane of ['smoke', 'gate', 'full', 'real'])
+    expect(mf('', { E2E_LANE: lane })).toBe(0) // local runs want every failure
+  expect(mf('maxFailures: 1', { CI: '1' })).toBe(1)
+  expect(mf('maxFailures: 5', {})).toBe(5) // set explicitly, it applies locally too
+  expect(mf('maxFailures: { gate: 2 }', { CI: '1' })).toBe(2)
+  expect(mf('maxFailures: { default: 7 }', { CI: '1', E2E_LANE: 'full' })).toBe(
+    7
+  )
+  // a per-lane object without this lane keeps the lane default
+  expect(mf('maxFailures: { gate: 2 }', { CI: '1', E2E_LANE: 'smoke' })).toBe(3)
+})
+test('maxFailures stops the run after N failures and skips the rest', () => {
+  const d = project({
+    'playwright.config.ts': config('workers: 1, fullyParallel: false'),
+    'auth.setup.ts': setupSpec,
+    'f.spec.ts': `import { test } from '@playwright/test'
+for (let i = 1; i <= 6; i++) test('fail ' + i + ' @smoke', async () => { throw new Error('x') })
+`,
+  })
+  const r = playwright(d, ['--project=chromium'], {
+    CI: '1',
+    E2E_LANE: 'smoke',
+  })
+  expect(r.out).toContain('3 failed')
+  expect(r.out).toContain('did not run')
+})
+test('globalTimeout per lane: smoke 10 min, gate 60, full/real 120; repo wins', () => {
+  const gt = (opts: string, env: Record<string, string> = {}) =>
+    resolved(opts, env).globalTimeout
+  expect(gt('', { E2E_LANE: 'smoke' })).toBe(10 * 60_000)
+  expect(gt('')).toBe(60 * 60_000)
+  expect(gt('', { E2E_LANE: 'full' })).toBe(120 * 60_000)
+  expect(gt('', { E2E_LANE: 'real' })).toBe(120 * 60_000)
+  expect(gt('globalTimeout: 5000')).toBe(5000)
+  expect(gt('globalTimeout: { gate: 7000 }')).toBe(7000)
+  expect(gt('globalTimeout: { gate: 7000 }', { E2E_LANE: 'smoke' })).toBe(
+    10 * 60_000
+  )
+})
+test('a hung run ends at globalTimeout with the tests it finished', () => {
+  const d = project({
+    'playwright.config.ts': config('globalTimeout: 3000, timeout: 60000'),
+    'auth.setup.ts': setupSpec,
+    'h.spec.ts': `import { test } from '@playwright/test'
+test('hangs', async () => { await new Promise(() => {}) })
+`,
+  })
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.code).not.toBe(0)
+  expect(r.out).toContain('Timed out waiting 3s for the test suite to run')
+})
+test('github reporter only when GITHUB_ACTIONS', () => {
+  const names = (env: Record<string, string>) =>
+    resolved('', env).reporter.map((r: any[]) => r[0])
+  expect(names({})).not.toContain('github')
+  expect(names({ GITHUB_ACTIONS: 'true' })).toEqual(['list', 'github'])
+})
+
+test('blob reporter also on PLAYWRIGHT_BLOB_OUTPUT_FILE or E2E_BLOB=1, not only when sharded', () => {
+  const names = (env: Record<string, string>) =>
+    resolved('', env).reporter.map((r: any[]) => r[0])
+  expect(names({ PLAYWRIGHT_BLOB_OUTPUT_FILE: '/tmp/b/report-1.zip' })).toEqual(
+    ['list', 'blob']
+  )
+  expect(names({ E2E_BLOB: '1' })).toEqual(['list', 'blob'])
+  expect(names({ E2E_BLOB: '0' })).toEqual(['list'])
+  expect(names({})).toEqual(['list'])
+})

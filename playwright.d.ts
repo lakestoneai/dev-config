@@ -12,7 +12,7 @@ export type PerLane<T> =
 
 export interface E2EOptions extends Omit<
   PlaywrightTestConfig,
-  'workers' | 'fullyParallel' | 'retries'
+  'workers' | 'fullyParallel' | 'retries' | 'maxFailures' | 'globalTimeout'
 > {
   /** use.baseURL */
   baseURL?: string
@@ -26,6 +26,10 @@ export interface E2EOptions extends Omit<
   fullyParallel?: PerLane<boolean>
   /** Playwright's default (0); or per lane */
   retries?: PerLane<number>
+  /** Stop after N failed tests. Default on CI: smoke 3, gate 10, full/real 20; 0 (off) outside CI; or per lane */
+  maxFailures?: PerLane<number>
+  /** Whole-run limit in ms. Default: smoke 10 min, gate 60, full/real 120; or per lane */
+  globalTimeout?: PerLane<number>
   /** Path of a global setup file, e.g. one that default-exports `preflight([...])` */
   globalSetup?: string
   /** Overrides E2E_VIDEO's video setting */

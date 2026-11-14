@@ -372,3 +372,25 @@ test('still signed in', async ({ storageState }) => { expect(String(storageState
   })
   expect(playwright(d, ['--project=chromium']).code).toBe(0)
 })
+
+// -- consoleGuard is boxed: its fixture step stays out of the report
+test('consoleGuard: no `Fixture "consoleGuard"` step in the report', () => {
+  const d = project({
+    'playwright.config.ts': cfg(
+      `reporter: [['./steps.reporter.js'], ['list']]`
+    ),
+    'steps.reporter.js': `export default class {
+  onStepBegin(test, result, step) { console.log('STEP>' + step.title) }
+}
+`,
+    'fixtures.ts': fx,
+    ...noSetup,
+    'a.spec.ts': `import { test } from './fixtures'
+test('ok', async ({ page }) => { await page.setContent('<p>hi</p>') })
+`,
+  })
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.code).toBe(0)
+  expect(r.out).toContain('STEP>') // the reporter saw steps (e.g. the page fixture)
+  expect(r.out).not.toContain('consoleGuard')
+})

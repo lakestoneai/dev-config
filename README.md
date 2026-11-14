@@ -100,16 +100,19 @@ export { expect } from '@playwright/test'
 | `loopbackOnly(url)` `httpOk(url,{timeoutMs})` `localSupabase(url,{boxHost})` `commands([bins])` `custom(name, fn)` | Built-in checks; `custom` takes any async function (run a shell script, query a seed row)                                                                                                                                                    |
 | `test`, `watchConsole(page, allow)` from `/playwright/fixtures`                                                    | `workerAuth` (worker-scoped storageState per `parallelIndex`, from `use: { auth }` in the config, state file reused), `consoleGuard` (auto; `consoleOptions: { allow: RegExp[] }`), `owned(prefix)` (unique names per worker, test and call) |
 
-Merge order, lowest first: `playwrightDefaults` < harness < your opts. Any option the harness doesn't name is passed through (`testDir`, `webServer`, `timeout`, `use`, `projects`, …) and wins; a `projects` array replaces the harness projects; `use` is merged key by key. `workers`, `retries` and `fullyParallel` take a value or `{ default, smoke, gate, full, real }`.
+Merge order, lowest first: `playwrightDefaults` < harness < your opts. Any option the harness doesn't name is passed through (`testDir`, `webServer`, `timeout`, `use`, `projects`, …) and wins; a `projects` array replaces the harness projects; `use` is merged key by key. `workers`, `retries`, `fullyParallel`, `maxFailures` and `globalTimeout` take a value or `{ default, smoke, gate, full, real }`.
 
-| Env var          | Effect                                                                                                                                 |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `E2E_LANE`       | `smoke` = `@smoke` · `gate` (default) = all but `@real`/`@manual` · `full` = all but `@manual` · `real` = `@real`. Unknown value fails |
-| `E2E_VIDEO=1`    | video on + `slowMo` 300 (opts `video` / `slowMo` win)                                                                                  |
-| `E2E_SHARD`      | any value (or `--shard` on the CLI) adds the `blob` reporter                                                                           |
-| `E2E_REPORT_DIR` | adds `html` (`<dir>/html`) and `json` (`<dir>/results.json`) reporters                                                                 |
-| `E2E_OUTPUT_DIR` | `outputDir`; beats the repo's own, so parallel stacks of one repo keep separate results and `.auth` state                              |
-| `CI`             | `failOnFlakyTests` in the `smoke` lane (plus `forbidOnly` from the defaults)                                                           |
+| Env var             | Effect                                                                                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `E2E_LANE`          | `smoke` = `@smoke` · `gate` (default) = all but `@real`/`@manual` · `full` = all but `@manual` · `real` = `@real`. Unknown value fails                                                           |
+| `E2E_VIDEO=1`       | video on + `slowMo` 300 (opts `video` / `slowMo` win)                                                                                                                                            |
+| `E2E_SHARD`         | any value (or `--shard` on the CLI) adds the `blob` reporter                                                                                                                                     |
+| `E2E_BLOB`          | `1` adds the `blob` reporter without sharding; so does `PLAYWRIGHT_BLOB_OUTPUT_FILE` (a runner that splits by file lists passes no `--shard` but still merges blobs)                             |
+| `E2E_SHARD_TIMINGS` | path of a previous run's JSON report: with `--shard`/`E2E_SHARD`, shards by recorded duration instead of count (see below). Needs Playwright ≥ 1.62; older versions ignore it and shard by count |
+| `E2E_REPORT_DIR`    | adds `html` (`<dir>/html`) and `json` (`<dir>/results.json`) reporters                                                                                                                           |
+| `E2E_OUTPUT_DIR`    | `outputDir`; beats the repo's own, so parallel stacks of one repo keep separate results and `.auth` state                                                                                        |
+| `CI`                | `failOnFlakyTests` in the `smoke` lane (plus `forbidOnly` from the defaults) and the lane's `maxFailures`                                                                                        |
+| `GITHUB_ACTIONS`    | adds the `github` reporter (inline annotations on the PR check)                                                                                                                                  |
 
 | Tag       | Meaning                                                                                        |
 | --------- | ---------------------------------------------------------------------------------------------- |
@@ -122,6 +125,9 @@ Details worth knowing:
 
 - **Lanes** match whole tag tokens (`@real` never matches `@realtime` or `agent@realestate.com`), also inside a repo's own `projects`; the harness `setup` project always runs, and so does any project of your own that another project lists in `dependencies` (unless it sets its own `grep`).
 - **`retries`** defaults to 1 on CI in the `smoke` lane (a flaky test can only be seen if a retry can pass it, which is what `failOnFlakyTests` needs); set `retries` to change it.
+- **`maxFailures`** (stop after N failed tests, the rest are skipped) defaults on CI only: `smoke` 3, `gate` 10, `full`/`real` 20; outside CI it is 0 (off) so a dev or agent healing specs sees every failure. Set it (a value or per lane) and it applies everywhere. It counts per shard process.
+- **`globalTimeout`** (whole run) defaults per lane, on and off CI: `smoke` 10 min, `gate` 60, `full`/`real` 120; a hung run ends with a report instead of a killed process. Set it to change it.
+- **Duration-aware sharding** (opt-in): Playwright shards by count, so one slow file can make one shard the long pole. Run with `E2E_SHARD_TIMINGS=<previous merged JSON report>` and `--shard=i/n`: the harness adds `@lakestoneai/dev-config/playwright/shard-reporter`, which packs file × project units longest-first onto the least-loaded shard (whole files stay together, in order; an unknown file weighs the median). No timings file, an unreadable one, or no `--shard`: Playwright's own sharding. Setup projects still run in every shard. Every shard must see the same timings file and the same tests.
 - **`consoleGuard`** needs a browser context, so even an API-only test opens one: give API specs plain `@playwright/test`. Chromium logs every failed request as `console.error: Failed to load resource: … status of 401`, so a wrong-password or expired-session test must allow it. An `allow` RegExp is tested against `<text> @ <url>` (so a pattern anchored with `$` on the text alone no longer matches), e.g. `consoleOptions: { allow: [/status of 401\b.* @ .*\/auth\/v1\//] }`. A missing favicon is ignored by default.
 - **`workerAuth`** saves state as `outputDir/.auth/<index>-<email>.json`, so a worker slot given another role logs in again; the sign-in runs as a worker setup step (60 s cap, not the first test's timeout) with the project's `use` (HTTPS errors, headers, locale). Set it in the config's `use: { auth }` (an `E2EAuth` variable); a signed-out spec says `test.use({ auth: null })` (`undefined` means "unset" and keeps the config's login). A `test.use({ auth })` in a shared helper module is ignored (it only applies inside the spec file or describe that calls it), and Playwright's types do not accept a worker option in `extend()`.
 - **`preflight`** starts every check at once under one deadline; a synchronous check blocks the event loop and cannot be timed out.
@@ -205,12 +211,13 @@ Pin the tag: Renovate then opens a PR when a newer tag of this preset exists. Ke
 
 ## Versions
 
-| Version | Adds                                                                                                                     |
-| ------- | ------------------------------------------------------------------------------------------------------------------------ |
-| 0.4.0   | Playwright e2e harness: `defineE2EConfig`, `preflight`, fixtures. Peer `@playwright/test` is now `>=1.52` (was `>=1.40`) |
-| 0.3.0   | Prettier base, ESLint base, tsconfig bases, Playwright `forbidOnly`/trace/screenshot, `setup-bun` action                 |
-| 0.2.0   | Renovate preset (`default.json`)                                                                                         |
-| 0.1.1   | Releases stage on npm via trusted publishing                                                                             |
+| Version | Adds                                                                                                                                                                                                                                                                                                                |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0.4.1   | `defineE2EConfig`: per-lane `maxFailures` (CI) and `globalTimeout`, opt-in duration-aware sharding (`E2E_SHARD_TIMINGS`), `github` reporter on Actions, `blob` also on `PLAYWRIGHT_BLOB_OUTPUT_FILE`/`E2E_BLOB=1`; `consoleGuard` is boxed. A repo on CI now stops a red run early: set `maxFailures: 0` to opt out |
+| 0.4.0   | Playwright e2e harness: `defineE2EConfig`, `preflight`, fixtures. Peer `@playwright/test` is now `>=1.52` (was `>=1.40`)                                                                                                                                                                                            |
+| 0.3.0   | Prettier base, ESLint base, tsconfig bases, Playwright `forbidOnly`/trace/screenshot, `setup-bun` action                                                                                                                                                                                                            |
+| 0.2.0   | Renovate preset (`default.json`)                                                                                                                                                                                                                                                                                    |
+| 0.1.1   | Releases stage on npm via trusted publishing                                                                                                                                                                                                                                                                        |
 
 ## Release
 
