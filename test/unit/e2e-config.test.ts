@@ -124,6 +124,26 @@ test("a repo project's own grepInvert is added to the lane's, never replaces it"
   )
   expect(own({ E2E_LANE: 'full' }).some((l) => l.includes('@slow'))).toBe(false)
 })
+test("a repo project's own grep is ANDed with the lane's grep, never replaces it", () => {
+  const d = project({
+    'playwright.config.ts': config(
+      `projects: [{ name: 'api', testIgnore: /.*\\.setup\\.ts/, grep: /@api/ }]`
+    ),
+    'a.spec.ts': `import { test } from '@playwright/test'
+test('plain @api', async () => {})
+test('critical @api @smoke', async () => {})
+test('vendor @api @real', async () => {})
+test('other @smoke', async () => {})
+test('other @real', async () => {})
+`,
+  })
+  const api = (env: Record<string, string>) => listed(d, env).sort()
+  expect(api({ E2E_LANE: 'smoke' })).toEqual(['api › critical @api @smoke'])
+  expect(api({ E2E_LANE: 'real' })).toEqual(['api › vendor @api @real'])
+  // lanes without a grep leave the repo's own grep alone
+  expect(api({ E2E_LANE: 'full' })).toHaveLength(3)
+  expect(api({})).toEqual(['api › critical @api @smoke', 'api › plain @api'])
+})
 test('an unknown lane is refused', () => {
   const r = playwright(dir, ['--list'], { E2E_LANE: 'nightly' })
   expect(r.code).not.toBe(0)
