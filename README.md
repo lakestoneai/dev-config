@@ -203,6 +203,15 @@ Bun from `package.json` `packageManager`, the Bun install cache keyed on `bun.lo
 
 Pin the tag: Renovate then opens a PR when a newer tag of this preset exists. Keep in the repo only what is the repo's own: `constraints`, `baseBranchPatterns`, and extra `packageRules` (they apply after the preset's, so they win). CI validates the preset with Renovate's own validator.
 
+## Versions
+
+| Version | Adds                                                                                                                     |
+| ------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 0.4.0   | Playwright e2e harness: `defineE2EConfig`, `preflight`, fixtures. Peer `@playwright/test` is now `>=1.52` (was `>=1.40`) |
+| 0.3.0   | Prettier base, ESLint base, tsconfig bases, Playwright `forbidOnly`/trace/screenshot, `setup-bun` action                 |
+| 0.2.0   | Renovate preset (`default.json`)                                                                                         |
+| 0.1.1   | Releases stage on npm via trusted publishing                                                                             |
+
 ## Release
 
 1. Bump `version` in `package.json` (a changed default is at least a minor: a tighter cap can turn a slow suite red; say which repos may need an override). Push to `main` and wait for CI green.
