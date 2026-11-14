@@ -5,13 +5,93 @@
 //   export const test = base.extend({})            // add repo fixtures here
 //   test.use({ auth: { accounts: (i) => ({ email: `e2e${i}@example.test`, password: '…' }), login: async (page, a) => {…} } })
 import { test as base } from '@playwright/test'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
 // Chromium reports a missing favicon as a console error; nothing a test can act on.
 const isFaviconFailure = (msg) =>
   msg.text().startsWith('Failed to load resource') &&
   /\/favicon\.ico(\?|$)/.test(msg.location()?.url ?? '')
+
+const SESSION_KEY = /^sb-.+-auth-token(\.\d+)?$/
+const DEFAULT_SESSION_MARGIN_MS = 600_000
+
+// expires_at (epoch seconds) of every Supabase session stored in a Playwright storage state: localStorage
+// `sb-<ref>-auth-token` (JSON) and cookies `sb-<ref>-auth-token[.n]` (@supabase/ssr: chunked, optional `base64-` prefix).
+// Anything unreadable is skipped: an app with no Supabase session is never judged expired.
+function sessionExpiries(state) {
+  const raw = []
+  for (const o of state.origins ?? [])
+    for (const e of o.localStorage ?? [])
+      if (SESSION_KEY.test(e.name)) raw.push(e.value)
+  const chunks = new Map()
+  for (const c of state.cookies ?? []) {
+    if (!SESSION_KEY.test(c.name)) continue
+    const base = `${c.domain}|${c.path}|${c.name.replace(/\.\d+$/, '')}`
+    chunks.set(base, [...(chunks.get(base) ?? []), c])
+  }
+  for (const list of chunks.values())
+    raw.push(
+      list
+        .sort(
+          (a, b) =>
+            Number(a.name.split('.')[1] ?? 0) -
+            Number(b.name.split('.')[1] ?? 0)
+        )
+        .map((c) => c.value)
+        .join('')
+    )
+  const out = []
+  for (let v of raw) {
+    try {
+      if (v.startsWith('base64-'))
+        v = Buffer.from(v.slice(7), 'base64url').toString('utf8')
+      else if (v.startsWith('%')) v = decodeURIComponent(v) // URL-encoded JSON (older @supabase/ssr)
+      const at = JSON.parse(v)?.expires_at
+      if (typeof at === 'number') out.push(at)
+    } catch {
+      // not a session
+    }
+  }
+  return out
+}
+
+// Files whose fresh login was already inside the margin (margin >= the project's jwt_expiry): a margin check would
+// re-login before every test, so each is warned about once and then checked with margin 0 (replaced only once expired).
+// Per worker process.
+const marginTooLarge = new Set()
+
+/** True when a saved state holds a Supabase session that expires within `marginMs` (or already has). */
+function sessionStale(file, marginMs) {
+  try {
+    const limit = Date.now() / 1000 + marginMs / 1000
+    return sessionExpiries(JSON.parse(readFileSync(file, 'utf8'))).some(
+      (at) => at <= limit
+    )
+  } catch {
+    return false
+  }
+}
+
+// Signs in as `account` and writes the state to `file` (own context: the project's use minus the config's storageState,
+// so a login never starts from another user's state).
+async function login(browser, auth, account, file, use) {
+  mkdirSync(dirname(file), { recursive: true })
+  const context = await browser.newContext({ ...use, storageState: undefined })
+  const page = await context.newPage()
+  try {
+    await auth.login(page, account)
+    const init = account?.storageInit
+    if (typeof init === 'function') await init(page)
+    else if (init)
+      await page.evaluate((kv) => {
+        for (const [k, v] of Object.entries(kv)) localStorage.setItem(k, v)
+      }, init)
+    await context.storageState({ path: file })
+  } finally {
+    await context.close()
+  }
+}
 
 /**
  * Collects console errors and uncaught page errors on `page`. An `allow` RegExp is tested against
@@ -49,6 +129,8 @@ export function watchConsole(page, allow = []) {
  *  - `auth: { accounts, login }` (`null` signs a spec out: `undefined` means "unset" and falls back to the config's) (an object: Playwright would treat a bare function option as a fixture)
  *      `accounts(index)`  the account for worker `parallelIndex`: `{ email, password, storageInit? }` (repo-supplied, unique per worker)
  *      `login(page, account)`  signs in on a clean page; the harness then saves the storage state
+ *      `sessionMarginMs`  (default 600000) a saved Supabase session (`sb-*-auth-token`, localStorage or cookie) that expires within
+ *        this long is replaced by a fresh login, before the worker's first test and before each later one
  *  - `consoleOptions: { allow: RegExp[] }`  console error texts that do not fail a test (an object, because Playwright reads
  *      a bare two-element array option as a `[value, options]` pair)
  * `account.storageInit` seeds localStorage after login, before the state is saved: `{ key: value }` or `async (page) => {}`.
@@ -72,37 +154,34 @@ export const test = base.extend({
         workerInfo.project.outputDir,
         `.auth/${id}-${who}.json`
       )
-      if (!existsSync(file)) {
-        mkdirSync(dirname(file), { recursive: true })
-        // the project's context options (baseURL, ignoreHTTPSErrors, extraHTTPHeaders, locale…), minus the
-        // config's storageState, so a login never starts from another user's state
-        const context = await browser.newContext({
-          ...workerInfo.project.use,
-          storageState: undefined,
-        })
-        const page = await context.newPage()
-        try {
-          await auth.login(page, account)
-          const init = account?.storageInit
-          if (typeof init === 'function') await init(page)
-          else if (init)
-            await page.evaluate((kv) => {
-              for (const [k, v] of Object.entries(kv))
-                localStorage.setItem(k, v)
-            }, init)
-          await context.storageState({ path: file })
-        } finally {
-          await context.close()
-        }
-      }
+      if (!existsSync(file))
+        await login(browser, auth, account, file, workerInfo.project.use)
       await use(file)
     },
     { scope: 'worker', timeout: 60_000 },
   ],
 
-  storageState: async ({ workerAuth, storageState }, use) => {
-    await use(workerAuth ?? storageState)
-  },
+  // Per test: a Supabase session in the saved state is rotated by the tests that run (refresh-token rotation) and
+  // expires after jwt_expiry, so a long worker would start later tests from a dead session. Re-login when it is
+  // inside `auth.sessionMarginMs` (default 10 min) of expiring; the file is rewritten for the tests after it.
+  storageState: [
+    async ({ workerAuth, storageState, browser, auth }, use, testInfo) => {
+      const configured = auth?.sessionMarginMs ?? DEFAULT_SESSION_MARGIN_MS
+      const margin = marginTooLarge.has(workerAuth) ? 0 : configured
+      if (workerAuth && sessionStale(workerAuth, margin)) {
+        const account = await auth.accounts(testInfo.parallelIndex)
+        await login(browser, auth, account, workerAuth, testInfo.project.use)
+        if (margin > 0 && sessionStale(workerAuth, margin)) {
+          marginTooLarge.add(workerAuth)
+          console.warn(
+            `[dev-config] a fresh login is already inside sessionMarginMs (${margin} ms): lower auth.sessionMarginMs below the project's jwt_expiry; re-logging in only once the session has expired, for ${workerAuth}`
+          )
+        }
+      }
+      await use(workerAuth ?? storageState)
+    },
+    { timeout: 60_000 },
+  ],
 
   // Auto: a console error (or an uncaught page error) on any page of the test fails it, unless it matches `consoleAllow`.
   consoleGuard: [
