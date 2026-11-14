@@ -514,3 +514,18 @@ test('workerAuth: a margin larger than the session life warns once and stops re-
   expect(loginCount(d)).toBe(2)
   expect(r.out.match(/already inside sessionMarginMs/g)?.length).toBe(1)
 })
+test('workerAuth: after the margin warning, a session that really expires is still replaced', () => {
+  // logins give 300 s, then 3 s, then 1 h; margin 600 s. The 3 s session is inside the margin, so the margin
+  // falls back to 0 (warn once); it expires during test 0, so test 1 must start on a fresh login, not the dead one
+  const files = sessionAuth([300, 3, 3600], { tests: 3 })
+  const spec = files['a.spec.ts'].replace(
+    "test('test ' + i, async ({ page }) => {",
+    "test('test ' + i, async ({ page }) => {\n    await new Promise((r) => setTimeout(r, 4000))"
+  )
+  const d = project({ ...files, 'a.spec.ts': spec })
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.code).toBe(0)
+  expect(loginCount(d)).toBe(3)
+  expect(seenTokens(d)).toEqual(['a1', 'a2', 'a2'])
+  expect(r.out.match(/already inside sessionMarginMs/g)?.length).toBe(1)
+})

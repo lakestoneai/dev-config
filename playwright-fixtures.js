@@ -56,8 +56,9 @@ function sessionExpiries(state) {
   return out
 }
 
-// Files whose fresh login was already inside the margin (margin >= the project's jwt_expiry): re-logging in per test
-// would never help, so each is warned about once and then left alone. Per worker process.
+// Files whose fresh login was already inside the margin (margin >= the project's jwt_expiry): a margin check would
+// re-login before every test, so each is warned about once and then checked with margin 0 (replaced only once expired).
+// Per worker process.
 const marginTooLarge = new Set()
 
 /** True when a saved state holds a Supabase session that expires within `marginMs` (or already has). */
@@ -165,18 +166,15 @@ export const test = base.extend({
   // inside `auth.sessionMarginMs` (default 10 min) of expiring; the file is rewritten for the tests after it.
   storageState: [
     async ({ workerAuth, storageState, browser, auth }, use, testInfo) => {
-      const margin = auth?.sessionMarginMs ?? DEFAULT_SESSION_MARGIN_MS
-      if (
-        workerAuth &&
-        !marginTooLarge.has(workerAuth) &&
-        sessionStale(workerAuth, margin)
-      ) {
+      const configured = auth?.sessionMarginMs ?? DEFAULT_SESSION_MARGIN_MS
+      const margin = marginTooLarge.has(workerAuth) ? 0 : configured
+      if (workerAuth && sessionStale(workerAuth, margin)) {
         const account = await auth.accounts(testInfo.parallelIndex)
         await login(browser, auth, account, workerAuth, testInfo.project.use)
-        if (sessionStale(workerAuth, margin)) {
+        if (margin > 0 && sessionStale(workerAuth, margin)) {
           marginTooLarge.add(workerAuth)
           console.warn(
-            `[dev-config] a fresh login is already inside sessionMarginMs (${margin} ms): lower auth.sessionMarginMs below the project's jwt_expiry; not re-logging in again for ${workerAuth}`
+            `[dev-config] a fresh login is already inside sessionMarginMs (${margin} ms): lower auth.sessionMarginMs below the project's jwt_expiry; re-logging in only once the session has expired, for ${workerAuth}`
           )
         }
       }
