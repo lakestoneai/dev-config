@@ -394,3 +394,98 @@ test('ok', async ({ page }) => { await page.setContent('<p>hi</p>') })
   expect(r.out).toContain('STEP>') // the reporter saw steps (e.g. the page fixture)
   expect(r.out).not.toContain('consoleGuard')
 })
+
+// -- workerAuth: a saved Supabase session near or past expiry is re-created, not reused (FLEET-133)
+// `login` writes a session whose expires_at is `now + offsets[n]` seconds on its n-th call (counter in logins.txt);
+// `store` is 'ls' (localStorage) or 'cookie' (chunked, base64- prefixed, as @supabase/ssr writes it).
+const sessionAuth = (
+  offsets: number[],
+  { store = 'ls', margin = '', tests = 2 } = {}
+) => ({
+  'playwright.config.ts': cfg().replace('workers: 2', 'workers: 1'),
+  'fixtures.ts': fx,
+  ...noSetup,
+  'a.spec.ts': `import { test, expect } from './fixtures'
+import { appendFileSync, readFileSync, existsSync } from 'node:fs'
+const offsets = ${JSON.stringify(offsets)}
+test.use({ auth: {
+  ${margin}
+  accounts: () => ({ email: 'u@example.test', password: 'pw' }),
+  login: async (page) => {
+    const n = existsSync('logins.txt') ? readFileSync('logins.txt', 'utf8').trim().split('\\n').filter(Boolean).length : 0
+    appendFileSync('logins.txt', 'login' + n + '\\n')
+    const session = JSON.stringify({ access_token: 'a' + n, refresh_token: 'r' + n, expires_at: Math.floor(Date.now() / 1000) + offsets[Math.min(n, offsets.length - 1)] })
+    await page.route('http://app.test/**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>app</p>' }))
+    await page.goto('http://app.test/')
+    if (${JSON.stringify(store)} === 'ls') {
+      await page.evaluate((s) => localStorage.setItem('sb-abc-auth-token', s), session)
+    } else {
+      const v = 'base64-' + Buffer.from(session).toString('base64url')
+      const h = Math.ceil(v.length / 2)
+      await page.context().addCookies([
+        { name: 'sb-abc-auth-token.0', value: v.slice(0, h), url: 'http://app.test/' },
+        { name: 'sb-abc-auth-token.1', value: v.slice(h), url: 'http://app.test/' },
+      ])
+    }
+  },
+} })
+for (let i = 0; i < ${tests}; i++) {
+  test('test ' + i, async ({ page }) => {
+    await page.route('http://app.test/**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>app</p>' }))
+    await page.goto('http://app.test/')
+    if (${JSON.stringify(store)} === 'ls') {
+      const s = JSON.parse((await page.evaluate(() => localStorage.getItem('sb-abc-auth-token')))!)
+      appendFileSync('seen-token.txt', s.access_token + '\\n')
+    } else {
+      appendFileSync('seen-token.txt', 'cookie\\n')
+    }
+  })
+}
+`,
+})
+const loginCount = (d: string) =>
+  readFileSync(`${d}/logins.txt`, 'utf8').trim().split('\n').length
+const seenTokens = (d: string) =>
+  readFileSync(`${d}/seen-token.txt`, 'utf8').trim().split('\n')
+
+test('workerAuth: a session with a long life is reused, one login', () => {
+  const d = project(sessionAuth([3600]))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(1)
+})
+test('workerAuth: a session already expired is replaced before the first test', () => {
+  const d = project(sessionAuth([-60, 3600]))
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+  expect(seenTokens(d)).toEqual(['a1', 'a1']) // the tests run on the fresh session, never the expired one
+})
+test('workerAuth: a session inside the default 10 min margin is replaced', () => {
+  const d = project(sessionAuth([300, 3600]))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+})
+test('workerAuth: a session that ages past the margin during the run is replaced before the next test', () => {
+  // life 640 s, margin 639 s: fresh at the first test, inside the margin for the second 2+ s later
+  const files = sessionAuth([640, 3600], {
+    margin: 'sessionMarginMs: 639_000,',
+  })
+  const spec = files['a.spec.ts'].replace(
+    "test('test ' + i, async ({ page }) => {",
+    "test('test ' + i, async ({ page }) => {\n    await new Promise((r) => setTimeout(r, 2500))"
+  )
+  const e = project({ ...files, 'a.spec.ts': spec })
+  expect(playwright(e, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(e)).toBe(2)
+  expect(seenTokens(e)).toEqual(['a0', 'a1'])
+})
+test('workerAuth: sessionMarginMs is configurable (a 5 min session is kept under a 1 min margin)', () => {
+  const d = project(sessionAuth([300], { margin: 'sessionMarginMs: 60_000,' }))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(1)
+})
+test('workerAuth: the session is also read from a chunked base64 cookie', () => {
+  const d = project(sessionAuth([-60, 3600], { store: 'cookie' }))
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(loginCount(d)).toBe(2)
+})
