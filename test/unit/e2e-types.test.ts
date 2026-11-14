@@ -44,3 +44,16 @@ test('t', async ({ owned }) => { owned(1) })
 `)
   expect(r.code).not.toBe(0)
 })
+
+test('a repo sets the auth default with test.use and the exported E2EAuth type, no cast', () => {
+  const r =
+    tsc(`import { test, type E2EAuth } from '@lakestoneai/dev-config/playwright/fixtures'
+const auth: E2EAuth = {
+  accounts: (i) => ({ email: 'a' + i, password: 'p' }),
+  login: async (page) => { await page.goto('/') },
+}
+test.use({ auth })
+`)
+  expect(r.out).toBe('')
+  expect(r.code).toBe(0)
+})

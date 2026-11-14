@@ -225,3 +225,63 @@ test('sandbox', { tag: ['@real', '@smoke'] }, async () => {})
   expect(gate).toContain('as member')
   expect(gate.some((l) => l.includes('sandbox'))).toBe(false)
 })
+
+// -- lanes match whole tag tokens only
+const lookalikes = project({
+  'playwright.config.ts': config(),
+  'auth.setup.ts': setupSpec,
+  'c.spec.ts': `import { test } from '@playwright/test'
+test('invites agent@realestate.com.au', async () => {})
+test('pings ops@real', async () => {})
+test('subscribes', { tag: '@realtime' }, async () => {})
+test('almost', { tag: '@smoke-ish' }, async () => {})
+test('really real', { tag: '@real' }, async () => {})
+test('really smoke', { tag: '@smoke' }, async () => {})
+`,
+})
+const chromiumTitles = (env: Record<string, string>) =>
+  listed(lookalikes, env)
+    .filter((l) => l.startsWith('chromium'))
+    .map((l) => l.replace('chromium › ', ''))
+    .sort()
+test('gate keeps tags and titles that merely contain @real', () => {
+  expect(chromiumTitles({})).toEqual([
+    'almost',
+    'invites agent@realestate.com.au',
+    'pings ops@real',
+    'really smoke',
+    'subscribes',
+  ])
+})
+test('real runs only the exact @real tag', () => {
+  expect(chromiumTitles({ E2E_LANE: 'real' })).toEqual(['really real'])
+})
+test('smoke runs only the exact @smoke tag', () => {
+  expect(chromiumTitles({ E2E_LANE: 'smoke' })).toEqual(['really smoke'])
+})
+
+// -- retries default so failOnFlakyTests can see a flaky test
+test('CI smoke retries once by default; gate and local do not; opts win', () => {
+  const retries = (opts: string, env: Record<string, string>) =>
+    proj(resolved(opts, env), 'chromium').retries
+  expect(retries('', { CI: '1', E2E_LANE: 'smoke' })).toBe(1)
+  expect(retries('', { CI: '1' })).toBe(0)
+  expect(retries('', { E2E_LANE: 'smoke' })).toBe(0)
+  expect(retries('retries: 0', { CI: '1', E2E_LANE: 'smoke' })).toBe(0)
+  expect(retries('retries: { gate: 2 }', { CI: '1', E2E_LANE: 'smoke' })).toBe(
+    0
+  )
+})
+
+// -- a repo's own projects keep the lane
+test("a repo's own project still runs only its lane", () => {
+  const d = project({
+    'playwright.config.ts': config(`projects: [{ name: 'extra' }]`),
+    'a.spec.ts': specs,
+  })
+  expect(listed(d, { E2E_LANE: 'smoke' }).sort()).toEqual([
+    'extra › critical @smoke',
+    'extra › narrow critical @mobile @smoke',
+  ])
+  expect(listed(d).some((l) => /@real|@manual/.test(l))).toBe(false)
+})

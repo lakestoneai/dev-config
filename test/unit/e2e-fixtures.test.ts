@@ -1,5 +1,6 @@
 import { afterAll, expect, setDefaultTimeout, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
+import { watchConsole } from '@lakestoneai/dev-config/playwright/fixtures'
 import { cleanup, playwright, project } from './e2e-harness'
 
 setDefaultTimeout(90_000)
@@ -193,4 +194,122 @@ test('state from config', async ({ page }) => {
 `,
   })
   expect(playwright(d, ['--project=chromium']).code).toBe(0)
+})
+
+// -- C1: the saved state belongs to the account, not just the worker slot
+test('workerAuth: two roles in one worker slot each get their own login', () => {
+  const role = (name: string) => `import { test, expect } from './fixtures'
+test.use({ auth: {
+  accounts: (i) => ({ email: '${name}' + i + '@example.test', password: 'pw' }),
+  login: async (page, account) => {
+    await page.route('http://app.test/**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>app</p>' }))
+    await page.goto('http://app.test/')
+    await page.evaluate((e) => localStorage.setItem('who', e), account.email)
+  },
+} })
+test('acts as ${name}', async ({ page }) => {
+  await page.route('http://app.test/**', (r) => r.fulfill({ contentType: 'text/html', body: '<p>app</p>' }))
+  await page.goto('http://app.test/')
+  expect(await page.evaluate(() => localStorage.getItem('who'))).toBe('${name}0@example.test')
+})
+`
+  const d = project({
+    'playwright.config.ts': cfg().replace(
+      'workers: 2',
+      'workers: 1, fullyParallel: false'
+    ),
+    'fixtures.ts': fx,
+    ...noSetup,
+    'a-owner.spec.ts': role('owner'),
+    'b-member.spec.ts': role('member'),
+  })
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.out).toContain('3 passed')
+  expect(r.code).toBe(0)
+})
+
+// -- I2: the login context carries the project's use (headers, https errors, locale…)
+test('workerAuth: the login request carries the project use (extraHTTPHeaders)', () => {
+  const d = project({
+    'playwright.config.ts': cfg(
+      `use: { extraHTTPHeaders: { 'x-probe': 'from-project' } }`
+    ),
+    'fixtures.ts': fx,
+    ...noSetup,
+    'a.spec.ts': `import { test, expect } from './fixtures'
+import { appendFileSync } from 'node:fs'
+test.use({ auth: {
+  accounts: () => ({ email: 'u@example.test', password: 'pw' }),
+  login: async (page) => {
+    await page.route('http://app.test/**', (r) => {
+      appendFileSync('seen-header.txt', String(r.request().headers()['x-probe']) + '\\n')
+      return r.fulfill({ contentType: 'text/html', body: '<p>app</p>' })
+    })
+    await page.goto('http://app.test/')
+  },
+} })
+test('t', async ({ page }) => { void page })
+`,
+  })
+  expect(playwright(d, ['--project=chromium']).code).toBe(0)
+  expect(readFileSync(`${d}/seen-header.txt`, 'utf8').trim()).toBe(
+    'from-project'
+  )
+})
+
+// -- M1: the login is a worker setup step with its own timeout, not part of the first test's budget
+test('workerAuth: a login slower than the test timeout does not fail the first test', () => {
+  const d = project({
+    'playwright.config.ts': cfg(`timeout: 2000`),
+    'fixtures.ts': fx,
+    ...noSetup,
+    'a.spec.ts': `import { test } from './fixtures'
+test.use({ auth: {
+  accounts: () => ({ email: 'u@example.test', password: 'pw' }),
+  login: async (page) => { await page.waitForTimeout(3500) },
+} })
+test('first test of the worker', async ({ page }) => { void page })
+`,
+  })
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.out).toContain('2 passed')
+  expect(r.code).toBe(0)
+})
+
+// -- M3: a missing favicon is not a console error; other failed network requests still are
+test('watchConsole: a favicon load failure is ignored, other failed loads are reported', () => {
+  const handlers: Record<string, (m: unknown) => void> = {}
+  const page = {
+    on: (e: string, h: (m: unknown) => void) => void (handlers[e] = h),
+  }
+  const w = watchConsole(page as never)
+  const msg = (url: string) => ({
+    type: () => 'error',
+    text: () =>
+      'Failed to load resource: the server responded with a status of 404 ()',
+    location: () => ({ url }),
+  })
+  handlers.console(msg('http://localhost:5173/favicon.ico'))
+  expect(w.errors).toEqual([])
+  handlers.console(msg('http://localhost:5173/api/quotes'))
+  expect(w.errors.length).toBe(1)
+})
+
+// -- allow matches text + ' @ ' + url (a resource error carries its URL only in location)
+test('watchConsole: allow can match the failing URL', () => {
+  const handlers: Record<string, (m: unknown) => void> = {}
+  const page = {
+    on: (e: string, h: (m: unknown) => void) => void (handlers[e] = h),
+  }
+  const w = watchConsole(page as never, [/status of 401 \(\) @ .*\/auth\/v1\//])
+  const msg = (url: string) => ({
+    type: () => 'error',
+    text: () =>
+      'Failed to load resource: the server responded with a status of 401 ()',
+    location: () => ({ url }),
+  })
+  handlers.console(msg('http://localhost:54321/auth/v1/token'))
+  expect(w.errors).toEqual([])
+  handlers.console(msg('http://localhost:54321/rest/v1/quotes'))
+  expect(w.errors.length).toBe(1)
 })

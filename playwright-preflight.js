@@ -51,34 +51,36 @@ export const commands = (bins) =>
     if (missing.length) throw new Error(`not on PATH: ${missing.join(', ')}`)
   })
 
-/** Returns a `globalSetup` function. Checks run in order; one error lists every failure. */
+/**
+ * Returns a `globalSetup` function. All checks start together under one deadline; one error lists every
+ * failure (in check order). A check still running at the deadline is reported as timed out.
+ * (A synchronous check blocks the event loop and cannot be interrupted.)
+ */
 export function preflight(checks, { timeoutMs = 20_000 } = {}) {
   return async function globalSetup() {
-    const deadline = Date.now() + timeoutMs
-    const failed = []
-    for (const { name, fn } of checks) {
-      const left = deadline - Date.now()
-      let timer
-      try {
-        if (left <= 0) throw new Error('skipped: preflight time budget spent')
-        await Promise.race([
-          Promise.resolve().then(fn),
-          new Promise((_, reject) => {
-            timer = setTimeout(
-              () =>
-                reject(
-                  new Error(`timed out (preflight budget ${timeoutMs} ms)`)
-                ),
-              left
-            )
-          }),
+    let timer
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(resolve, timeoutMs, DEADLINE)
+    })
+    const results = await Promise.all(
+      checks.map(({ fn }) =>
+        Promise.race([
+          Promise.resolve()
+            .then(fn)
+            .then(
+              () => null,
+              (e) => (e instanceof Error ? e.message : String(e))
+            ),
+          deadline.then(() => `timed out (preflight budget ${timeoutMs} ms)`),
         ])
-      } catch (e) {
-        failed.push(`  - ${name}: ${e instanceof Error ? e.message : e}`)
-      } finally {
-        clearTimeout(timer)
-      }
-    }
+      )
+    )
+    clearTimeout(timer)
+    const failed = checks
+      .map(({ name }, i) =>
+        results[i] === null ? null : `  - ${name}: ${results[i]}`
+      )
+      .filter(Boolean)
     if (failed.length) {
       throw new Error(
         `Preflight failed (${failed.length} of ${checks.length} checks):\n${failed.join('\n')}`
@@ -86,3 +88,5 @@ export function preflight(checks, { timeoutMs = 20_000 } = {}) {
     }
   }
 }
+
+const DEADLINE = Symbol('deadline')

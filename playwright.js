@@ -23,7 +23,7 @@ export const playwrightDefaults = {
  * `timeout`, `use`, `expect`, `reporter`, `projects`…), so a repo's key always wins; a `projects` array
  * replaces the harness projects. `use` is shallow-merged over the harness `use`.
  *
- * `workers`, `retries` and `fullyParallel` take a value or `{ default, smoke, gate, full, real }`.
+ * `workers`, `retries` (default 1 on CI in the smoke lane) and `fullyParallel` take a value or `{ default, smoke, gate, full, real }`.
  * `outputDir` is overridden by env E2E_OUTPUT_DIR (separate result folders for parallel stacks).
  *
  * Projects: `setup` (`*.setup.ts`) -> `chromium` (1440x900, `storageState`, depends on setup) -> optional `mobile`
@@ -57,6 +57,7 @@ export function defineE2EConfig(opts = {}) {
   // workers / retries / fullyParallel: a value, or { default, smoke, gate, full, real } to differ per lane
   const perLane = (v) =>
     v !== null && typeof v === 'object' ? (v[lane] ?? v.default) : v
+  const ciSmokeRetry = env.CI && lane === 'smoke' ? 1 : undefined
   const watch = env.E2E_VIDEO === '1'
   const sharded =
     !!env.E2E_SHARD || process.argv.some((a) => a.startsWith('--shard'))
@@ -79,7 +80,12 @@ export function defineE2EConfig(opts = {}) {
   }
   const filter = { ...(grep && { grep }), ...(grepInvert && { grepInvert }) }
   const projects = [
-    { name: 'setup', testMatch: /.*\.setup\.ts/ },
+    {
+      name: 'setup',
+      testMatch: /.*\.setup\.ts/,
+      grep: /./, // setup always runs: the config-level lane filter must not reach it
+      grepInvert: /(?!)/,
+    },
     {
       name: 'chromium',
       testIgnore: /.*\.setup\.ts/,
@@ -111,11 +117,16 @@ export function defineE2EConfig(opts = {}) {
   return defineConfig(playwrightDefaults, {
     fullyParallel: perLane(fullyParallel),
     workers: perLane(workers),
-    ...(perLane(retries) !== undefined && { retries: perLane(retries) }),
+    // CI smoke retries once by default: failOnFlakyTests only sees a flaky test if a retry can pass it
+    ...(() => {
+      const r = retries === undefined ? ciSmokeRetry : perLane(retries)
+      return r !== undefined && { retries: r }
+    })(),
     // E2E_OUTPUT_DIR beats the repo's outputDir: parallel stacks of one repo need separate result folders
     ...((env.E2E_OUTPUT_DIR || outputDir) && {
       outputDir: env.E2E_OUTPUT_DIR || outputDir,
     }),
+    ...filter, // a repo's own projects inherit the lane
     reporter,
     failOnFlakyTests: !!env.CI && lane === 'smoke',
     ...(globalSetup && { globalSetup }),
@@ -125,9 +136,12 @@ export function defineE2EConfig(opts = {}) {
   })
 }
 
+// Whole tag tokens only. Playwright greps "<project> <file> <describe> <title> <tags>" joined by spaces, so a bare
+// /@real/ would also drop a title containing agent@realestate.com or a tag like @realtime.
+const tag = (t) => `(?:^|\\s)${t}(?=\\s|$)`
 const LANES = {
-  smoke: { grep: /@smoke/ },
-  gate: { grepInvert: /@real|@manual/ },
-  full: { grepInvert: /@manual/ },
-  real: { grep: /@real/ },
+  smoke: { grep: new RegExp(tag('@smoke')) },
+  gate: { grepInvert: new RegExp(`${tag('@real')}|${tag('@manual')}`) },
+  full: { grepInvert: new RegExp(tag('@manual')) },
+  real: { grep: new RegExp(tag('@real')) },
 }

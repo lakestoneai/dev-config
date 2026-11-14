@@ -8,8 +8,17 @@ import { test as base } from '@playwright/test'
 import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
+// Chromium reports a missing favicon as a console error; nothing a test can act on.
+const isFaviconFailure = (msg) =>
+  msg.text().startsWith('Failed to load resource') &&
+  /\/favicon\.ico(\?|$)/.test(msg.location()?.url ?? '')
+
 /**
- * Collects console errors and uncaught page errors on `page` (matching `allow` RegExps are ignored).
+ * Collects console errors and uncaught page errors on `page`. An `allow` RegExp is tested against
+ * `<message text> @ <url>` (the URL is the message location: for a failed request, the request URL).
+ * Chromium also reports every failed network request (a 401 from a wrong-password test, a 404) as
+ * `console.error: Failed to load resource: … status of 401`, which fails the test: allow the ones a test expects
+ * (`/status of 401 \\(\\) @ .*\\/auth\\//`). A missing favicon is ignored by default.
  * `check()` throws one error listing them. The `consoleGuard` fixture uses it for the test's pages; call it
  * yourself for a page the guard cannot see (e.g. one from a separately created browser context).
  */
@@ -17,8 +26,11 @@ export function watchConsole(page, allow = []) {
   const errors = []
   const ok = (text) => allow.some((re) => re.test(text))
   page.on('console', (msg) => {
-    if (msg.type() === 'error' && !ok(msg.text()))
-      errors.push(`console.error: ${msg.text()}`)
+    if (msg.type() !== 'error') return
+    // text + ' @ ' + url: a failed resource carries its URL only in location()
+    if (ok(`${msg.text()} @ ${msg.location()?.url ?? ''}`)) return
+    if (isFaviconFailure(msg)) return
+    errors.push(`console.error: ${msg.text()}`)
   })
   page.on('pageerror', (err) => {
     if (!ok(err.message)) errors.push(`pageerror: ${err.message}`)
@@ -48,23 +60,31 @@ export const test = base.extend({
 
   // Once per worker: sign in as accounts(parallelIndex), keep the state in the project's outputDir/.auth/<i>.json
   // and reuse the file when it exists. undefined (no `auth`) leaves the config's storageState alone.
+  // Once per worker: sign in as accounts(parallelIndex) and keep the state in outputDir/.auth/<index>-<email>.json,
+  // reused when the file exists (a restarted worker). The account is in the name: a worker slot that is handed a
+  // different `auth` (another role) must not pick up the previous role's login. Own timeout, so a slow
+  // sign-in does not spend the first test's budget. undefined (no `auth`) leaves the config's storageState alone.
   workerAuth: [
-    async ({ browser, auth }, use) => {
+    async ({ browser, auth }, use, workerInfo) => {
       if (!auth) return use(undefined)
-      const { accounts, login } = auth
-      const id = test.info().parallelIndex
-      const file = resolve(test.info().project.outputDir, `.auth/${id}.json`)
+      const id = workerInfo.parallelIndex
+      const account = await auth.accounts(id)
+      const who = String(account?.email ?? 'account').replace(/[^\w.-]/g, '_')
+      const file = resolve(
+        workerInfo.project.outputDir,
+        `.auth/${id}-${who}.json`
+      )
       if (!existsSync(file)) {
         mkdirSync(dirname(file), { recursive: true })
-        // a clean context: no storageState from the config leaks into the login
+        // the project's context options (baseURL, ignoreHTTPSErrors, extraHTTPHeaders, locale…), minus the
+        // config's storageState, so a login never starts from another user's state
         const context = await browser.newContext({
+          ...workerInfo.project.use,
           storageState: undefined,
-          baseURL: test.info().project.use.baseURL, // workerAuth is worker-scoped: it cannot read the baseURL fixture
         })
         const page = await context.newPage()
         try {
-          const account = await accounts(id)
-          await login(page, account)
+          await auth.login(page, account)
           const init = account?.storageInit
           if (typeof init === 'function') await init(page)
           else if (init)
@@ -79,7 +99,7 @@ export const test = base.extend({
       }
       await use(file)
     },
-    { scope: 'worker' },
+    { scope: 'worker', timeout: 60_000 },
   ],
 
   storageState: async ({ workerAuth, storageState }, use) => {

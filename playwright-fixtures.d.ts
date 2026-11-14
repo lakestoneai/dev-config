@@ -14,6 +14,12 @@ export interface E2EAccount {
   storageInit?: Record<string, string> | ((page: Page) => void | Promise<void>)
   [key: string]: unknown
 }
+export interface E2EAuth {
+  /** Account for worker `parallelIndex` (unique per worker) */
+  accounts: (index: number) => E2EAccount | Promise<E2EAccount>
+  /** Signs in on a clean page; the harness then saves the state */
+  login: (page: Page, account: E2EAccount) => Promise<void>
+}
 export interface ConsoleWatch {
   errors: string[]
   /** Throws one error listing every collected console error */
@@ -32,14 +38,7 @@ export declare const test: TestType<
   PlaywrightWorkerArgs &
     PlaywrightWorkerOptions & {
       /** Per-worker sign-in; set with `test.use({ auth })` */
-      auth:
-        | {
-            /** Account for worker `parallelIndex` (unique per worker) */
-            accounts: (index: number) => E2EAccount | Promise<E2EAccount>
-            /** Signs in on a clean page; the harness then saves the state */
-            login: (page: Page, account: E2EAccount) => Promise<void>
-          }
-        | undefined
+      auth: E2EAuth | undefined
       workerAuth: string | undefined
     }
 >

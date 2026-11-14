@@ -33,7 +33,7 @@ Why: with no `actionTimeout`, a click on a missing element waits forever. A norm
 
 ## Playwright e2e harness
 
-One e2e config, preflight and fixtures for every repo (0.4.0). Playwright is a peer dependency.
+One e2e config, preflight and fixtures for every repo (0.4.0). Playwright (>= 1.52, the first with `failOnFlakyTests`) is a peer dependency only: to try an unreleased build in a repo, install the `bun pm pack` tarball, not a `link:`/symlink (a link loads `@playwright/test` twice and Playwright then refuses to run).
 
 ```ts
 // playwright.config.ts
@@ -112,6 +112,14 @@ Merge order, lowest first: `playwrightDefaults` < harness < your opts. Any optio
 | `@real`   | Needs a real corpus or vendor sandbox; only in `full` and `real`                               |
 | `@mobile` | Runs in the `mobile` project (in the `smoke` lane only with `@smoke` too)                      |
 | `@manual` | Writes to a vendor or sandbox; never automatic (no lane runs it; select with `--grep @manual`) |
+
+Details worth knowing:
+
+- **Lanes** match whole tag tokens (`@real` never matches `@realtime` or `agent@realestate.com`), also inside a repo's own `projects`; the `setup` project always runs.
+- **`retries`** defaults to 1 on CI in the `smoke` lane (a flaky test can only be seen if a retry can pass it, which is what `failOnFlakyTests` needs); set `retries` to change it.
+- **`consoleGuard`** needs a browser context, so even an API-only test opens one: give API specs plain `@playwright/test`. Chromium logs every failed request as `console.error: Failed to load resource: … status of 401`, so a wrong-password or expired-session test must allow it. An `allow` RegExp is tested against `<text> @ <url>`, e.g. `consoleOptions: { allow: [/status of 401 \(\) @ .*\/auth\/v1\//] }`. A missing favicon is ignored by default.
+- **`workerAuth`** saves state as `outputDir/.auth/<index>-<email>.json`, so a worker slot given another role logs in again; the sign-in runs as a worker setup step (60 s cap, not the first test's timeout) with the project's `use` (HTTPS errors, headers, locale). Set it with `test.use({ auth })` (type `E2EAuth`); Playwright's types do not accept a worker option in `extend()`.
+- **`preflight`** starts every check at once under one deadline; a synchronous check blocks the event loop and cannot be timed out.
 
 Lanes filter by tag, so they work with `test.fixme`, serial `describe`s and tags set per loop iteration (`{ tag: … }`). Gotchas: Playwright reads a bare two-element array or a bare function as an option value as a fixture, which is why the options are objects (`auth`, `consoleOptions`). `workerAuth` keeps state in the project's `outputDir/.auth/<parallelIndex>.json`; Playwright clears `outputDir` each run, so a run logs in once per worker and a restarted worker reuses the file.
 

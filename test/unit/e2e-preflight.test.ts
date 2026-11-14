@@ -90,18 +90,28 @@ test('a custom check can run a shell script', async () => {
     await message(run([sh('echo not-live-guard-tripped >&2; exit 3')]))
   ).toContain('not-live-guard-tripped')
 })
-test('bounded: a hung check is reported at the budget, the rest still named', async () => {
+test('bounded: every hung check is reported at the one deadline, quick ones are not named', async () => {
   const started = Date.now()
   const m = await message(
     run(
-      [custom('hangs', () => new Promise(() => {})), custom('after', () => {})],
+      [
+        custom('hangs one', () => new Promise(() => {})),
+        custom('hangs two', () => new Promise(() => {})),
+        custom('quick', () => {}),
+      ],
       { timeoutMs: 300 }
     )
   )
-  expect(Date.now() - started).toBeLessThan(3_000)
-  expect(m).toContain('hangs: timed out')
-  expect(m).toContain('Preflight failed (2 of 2 checks)')
-  expect(m).toContain('after: skipped: preflight time budget spent')
+  expect(Date.now() - started).toBeLessThan(1_500) // one deadline, not one per check
+  expect(m).toContain('Preflight failed (2 of 3 checks)')
+  expect(m).toContain('hangs one: timed out')
+  expect(m).toContain('hangs two: timed out')
+  expect(m).not.toContain('quick')
+})
+test('checks run side by side: three 400 ms checks fit a 1 s budget', async () => {
+  const slow = (n: number) =>
+    custom(`slow ${n}`, () => new Promise<void>((r) => setTimeout(r, 400)))
+  await run([slow(1), slow(2), slow(3)], { timeoutMs: 1_000 })
 })
 
 // through the real Playwright CLI: globalSetup only, never at --list
