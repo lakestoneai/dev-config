@@ -95,6 +95,11 @@
       "automerge": false,
       "labels": ["dependencies", "runtime"],
       "schedule": ["at any time"]
+    },
+    {
+      "description": "HOLD PLAYWRIGHT BELOW 1.65 - 1.65 makes the blob reporter delete its output directory again (release notes 1.65, breaking), so runners that merge several blobs from one folder keep only the last. REMOVE THIS RULE once a @lakestoneai/dev-config release writes one blob per run (FLEET-132, 0.7.0) is live and the fleet pins it.",
+      "matchPackageNames": ["@playwright/test", "playwright"],
+      "allowedVersions": "<1.65.0"
     }
   ],
   "description": "Lakestone Renovate standard (@lakestoneai/dev-config): weekly grouped PRs Monday 00:00-05:59 AWST, majors and the Bun runtime via the dashboard, security fixes any time and auto-merged on green, monthly lockfile refresh. Repos extend it pinned (github>lakestoneai/dev-config#vX.Y.Z) and keep only constraints, baseBranchPatterns and their own groups.",
