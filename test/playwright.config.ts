@@ -8,6 +8,10 @@ export default defineConfig(playwrightDefaults, {
   reporter: 'list',
   projects: [
     { name: 'defaults' },
-    { name: 'project-override', use: { actionTimeout: 2_000 } },
+    {
+      name: 'project-override',
+      use: { actionTimeout: 2_000 },
+      expect: { toPass: { timeout: 2_000 } },
+    },
   ],
 })

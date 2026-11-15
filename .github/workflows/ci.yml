@@ -15,6 +15,29 @@ jobs:
       - uses: ./.github/actions/setup-bun # dogfood: every package build tests the shared action
       - run: bunx playwright install --with-deps chromium
       - run: bun run test
+  # The peer range, run: the floor (the oldest Playwright the code claims to support) and the newest release, so a
+  # Playwright change (the 1.65 blob folder wipe) shows up here before Renovate offers the bump. Separate from `test`
+  # so that job keeps its name for the ruleset's required check. `--no-save` leaves package.json and bun.lock alone.
+  playwright-range:
+    name: playwright ${{ matrix.playwright }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        playwright: ['1.52.0', latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Playwright 1.52 hangs on Node 24+ (measured locally: `playwright test --list` never returns, and its browser
+      # download never extracts), so the range legs pin the Node the floor needs
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: ./.github/actions/setup-bun
+      - run: bun add --no-save @playwright/test@${{ matrix.playwright }}
+      - run: bunx playwright --version
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run test
   renovate-preset:
     runs-on: ubuntu-latest
     timeout-minutes: 10

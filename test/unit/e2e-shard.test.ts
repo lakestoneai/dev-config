@@ -6,7 +6,7 @@ import {
   assignShards,
   timingsFromReport,
 } from '@lakestoneai/dev-config/playwright/shard-reporter'
-import { cleanup, playwright, project } from './e2e-harness'
+import { cleanup, playwright, project, pwMinor } from './e2e-harness'
 
 setDefaultTimeout(120_000)
 afterAll(cleanup)
@@ -92,33 +92,37 @@ test('assignShards: longest first onto the least-loaded shard, deterministic', (
   expect(Math.max(...load)).toBeLessThanOrEqual((190 / 3) * 1.2)
 })
 
-test('with timings: N shards, union = every test once, no duplicates, max bin <= 1.2x ideal', () => {
-  const ran = runShards(3, { E2E_SHARD_TIMINGS: timingsFile })
-  const all = ran.flat()
-  expect(all.length).toBe(24)
-  expect(new Set(all).size).toBe(24)
-  // a file never splits across shards
-  const shardOfFile = new Map<string, number>()
-  ran.forEach((tests, i) =>
-    tests.forEach((t) => {
-      const f = t.split('|')[0]
-      expect(shardOfFile.get(f) ?? i).toBe(i)
-      shardOfFile.set(f, i)
-    })
-  )
-  const load = [0, 0, 0]
-  for (const [f, i] of shardOfFile) load[i] += SECONDS[names.indexOf(f)]
-  expect(Math.max(...load)).toBeLessThanOrEqual((190 / 3) * 1.2)
-  // the built-in count sharding of the same fixture is worse (this is what the reporter fixes)
-  const counted = runShards(3, {})
-  const cLoad = [0, 0, 0]
-  counted.forEach((tests, i) =>
-    new Set(tests.map((t) => t.split('|')[0])).forEach(
-      (f) => (cLoad[i] += SECONDS[names.indexOf(f)])
+// `preprocess` (what the shard reporter hooks) exists from Playwright 1.62; below it the harness falls back to count sharding
+test.skipIf(pwMinor < 62)(
+  'with timings: N shards, union = every test once, no duplicates, max bin <= 1.2x ideal',
+  () => {
+    const ran = runShards(3, { E2E_SHARD_TIMINGS: timingsFile })
+    const all = ran.flat()
+    expect(all.length).toBe(24)
+    expect(new Set(all).size).toBe(24)
+    // a file never splits across shards
+    const shardOfFile = new Map<string, number>()
+    ran.forEach((tests, i) =>
+      tests.forEach((t) => {
+        const f = t.split('|')[0]
+        expect(shardOfFile.get(f) ?? i).toBe(i)
+        shardOfFile.set(f, i)
+      })
     )
-  )
-  expect(Math.max(...cLoad)).toBeGreaterThan(Math.max(...load))
-})
+    const load = [0, 0, 0]
+    for (const [f, i] of shardOfFile) load[i] += SECONDS[names.indexOf(f)]
+    expect(Math.max(...load)).toBeLessThanOrEqual((190 / 3) * 1.2)
+    // the built-in count sharding of the same fixture is worse (this is what the reporter fixes)
+    const counted = runShards(3, {})
+    const cLoad = [0, 0, 0]
+    counted.forEach((tests, i) =>
+      new Set(tests.map((t) => t.split('|')[0])).forEach(
+        (f) => (cLoad[i] += SECONDS[names.indexOf(f)])
+      )
+    )
+    expect(Math.max(...cLoad)).toBeGreaterThan(Math.max(...load))
+  }
+)
 
 test('a unit with no timing gets the median; none is dropped or duplicated', () => {
   const partial = join(mkdtempSync(join(tmpdir(), 'e2e-timings-')), 'p.json')

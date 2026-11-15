@@ -68,3 +68,42 @@ export default defineE2EConfig({ use: { auth } })
   expect(r.out).toBe('')
   expect(r.code).toBe(0)
 })
+
+test('0.7.0 types: any Playwright video value, globalSetup arrays, per-lane timeout, replace, loginTimeoutMs, httpOk retries', () => {
+  const r =
+    tsc(`import { defineE2EConfig, expectedDurationMs, budgetFromExpected } from '@lakestoneai/dev-config/playwright'
+import { httpOk } from '@lakestoneai/dev-config/playwright/preflight'
+import { test, type E2EAuth } from '@lakestoneai/dev-config/playwright/fixtures'
+import TimeoutReporter from '@lakestoneai/dev-config/playwright/timeout-reporter'
+const auth: E2EAuth = { accounts: () => ({ email: 'a', password: 'p' }), login: async () => {}, loginTimeoutMs: 5000 }
+export default defineE2EConfig({
+  video: { mode: 'on', size: { width: 640, height: 360 } },
+  globalSetup: ['./a.ts', './b.ts'],
+  timeout: { default: 30_000, real: 90_000 },
+  globalTimeout: { smoke: 1 },
+  use: { auth, consoleOptions: { allow: [/x/], replace: true } },
+})
+test.use({ consoleOptions: { allow: [/x/], replace: true } })
+httpOk('http://x', { timeoutMs: 1, retries: 1, retryDelayMs: 1 })
+budgetFromExpected(expectedDurationMs(new Map([['a', 1]]), { workers: 1, shards: 1 }))
+new TimeoutReporter({ budgetMs: 1, source: 's' })
+`)
+  expect(r.out).toBe('')
+  expect(r.code).toBe(0)
+})
+test('0.7.0 types: a non-number timeout, an unknown lane in timeout, and a non-boolean replace are errors', () => {
+  for (const bad of [
+    `defineE2EConfig({ timeout: 'slow' })`,
+    `defineE2EConfig({ timeout: { nightly: 1 } })`,
+    `defineE2EConfig({ use: { consoleOptions: { replace: 'yes' } } })`,
+  ]) {
+    const r = tsc(
+      `import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'\n${bad}\n`
+    )
+    expect(r.code).not.toBe(0)
+  }
+})
+test('./package.json is an export, so tools that read the package version can resolve it', () => {
+  const p = require('@lakestoneai/dev-config/package.json')
+  expect(p.name).toBe('@lakestoneai/dev-config')
+})
