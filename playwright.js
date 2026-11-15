@@ -88,7 +88,7 @@ function globalBudget({ env, argv, lane, repoValue, workers, shard, sharded }) {
     return min === 0
       ? {}
       : {
-          ms: Math.round(min * 60_000),
+          ms: Math.max(1, Math.round(min * 60_000)),
           source: `E2E_GLOBAL_TIMEOUT=${min} min`,
         }
   }
@@ -302,7 +302,8 @@ export function defineE2EConfig(opts = {}) {
 //    next run replaces the last blob instead of piling up next to it and a merge never sees an old run. A shard:
 //    `report-<i>-of-<n>.zip`, otherwise `report.zip`.
 //  - E2E_BLOB_DIR, or `blob-report` (a folder several runs share): a name from the invocation (lane + CLI args, like
-//    Playwright's own hash), so the same run replaces itself and another file list adds its own file.
+//    Playwright's own hash), so the same run replaces itself and another file list adds its own file; a shard adds
+//    `-<i>-of-<n>`: `report-<hash>-<i>-of-<n>.zip`, so two lanes' shard 1/2 do not overwrite each other.
 // A runner's own PLAYWRIGHT_BLOB_OUTPUT_FILE is left alone.
 function blobOptions(env, shard, argv) {
   if (env.PLAYWRIGHT_BLOB_OUTPUT_FILE) return {}
@@ -310,15 +311,19 @@ function blobOptions(env, shard, argv) {
   const dir =
     env.E2E_BLOB_DIR ||
     (runOwned ? `${env.E2E_REPORT_DIR}/blob` : 'blob-report')
+  // The hash leaves --shard out: a shard's own number is in the name, and one invocation's shards share a hash
+  const args = argv.slice(2).filter((a, i, all) => {
+    return !(/^--shard(=|$)/.test(a) || all[i - 1] === '--shard')
+  })
   const invocation = createHash('sha1')
-    .update(JSON.stringify([env.E2E_LANE ?? '', argv.slice(2)]))
+    .update(JSON.stringify([env.E2E_LANE ?? '', args]))
     .digest('hex')
     .slice(0, 8)
-  const name = shard
-    ? `${shard.current}-of-${shard.total}`
-    : runOwned
-      ? ''
-      : invocation
+  const parts = [
+    runOwned ? '' : invocation,
+    shard ? `${shard.current}-of-${shard.total}` : '',
+  ].filter(Boolean)
+  const name = parts.join('-')
   return { outputFile: `${dir}/report${name && `-${name}`}.zip` }
 }
 

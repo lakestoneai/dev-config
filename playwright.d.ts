@@ -1,6 +1,6 @@
 import type {
   PlaywrightTestConfig,
-  PlaywrightTestOptions,
+  PlaywrightWorkerOptions,
   Project,
   ReporterDescription,
 } from '@playwright/test'
@@ -49,7 +49,7 @@ export interface E2EOptions extends Omit<
   /** Path(s) of a global setup file, e.g. one that default-exports `preflight([...])` */
   globalSetup?: string | string[]
   /** Overrides E2E_VIDEO's video setting (any mode Playwright accepts) */
-  video?: PlaywrightTestOptions['video']
+  video?: PlaywrightWorkerOptions['video']
   /** Overrides E2E_VIDEO's slowMo (ms) */
   slowMo?: number
   /** Playwright's `use`, plus the fixtures' options from `/playwright/fixtures` */

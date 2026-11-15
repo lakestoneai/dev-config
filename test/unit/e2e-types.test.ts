@@ -7,13 +7,14 @@ setDefaultTimeout(60_000)
 const made: string[] = []
 afterAll(() => made.forEach((d) => rmSync(d, { recursive: true, force: true })))
 
-const tsc = (code: string) => {
+const tsc = (code: string, compilerOptions: object = {}) => {
   const dir = mkdtempSync(join(import.meta.dir, 'fixtures/tsc-'))
   made.push(dir)
   writeFileSync(
     join(dir, 'tsconfig.json'),
     JSON.stringify({
       extends: '@lakestoneai/dev-config/tsconfig/strict.json',
+      compilerOptions,
       include: ['*.ts'],
     })
   )
@@ -102,6 +103,28 @@ test('0.7.0 types: a non-number timeout, an unknown lane in timeout, and a non-b
     )
     expect(r.code).not.toBe(0)
   }
+})
+test("video is checked against Playwright's real video type: a bad mode is an error, even with skipLibCheck on", () => {
+  // `PlaywrightTestOptions['video']` is not a key (video lives in PlaywrightWorkerOptions); under the house
+  // skipLibCheck the lookup silently becomes `any` and accepts anything. The expect-error line fails if it does.
+  const r =
+    tsc(`import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'
+// @ts-expect-error not a video mode
+defineE2EConfig({ video: 'not-a-mode' })
+defineE2EConfig({ video: 'on' })
+`)
+  expect(r.out).toBe('')
+  expect(r.code).toBe(0)
+})
+test('the package declarations compile with skipLibCheck off (a type that does not exist is an error in them)', () => {
+  const r = tsc(
+    `import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'
+export default defineE2EConfig({ video: 'on' })
+`,
+    { skipLibCheck: false }
+  )
+  expect(r.out).toBe('')
+  expect(r.code).toBe(0)
 })
 test('./package.json is an export, so tools that read the package version can resolve it', () => {
   const p = require('@lakestoneai/dev-config/package.json')

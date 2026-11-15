@@ -72,6 +72,9 @@ test('E2E_GLOBAL_TIMEOUT (minutes) beats the lane and the repo; 0 turns it off; 
     /E2E_GLOBAL_TIMEOUT=soon is not a number of minutes/
   )
 })
+test('a tiny positive E2E_GLOBAL_TIMEOUT is still a limit (1 ms), never rounded down to none', () => {
+  expect(gt('', { E2E_GLOBAL_TIMEOUT: '0.000001' })).toBe(1)
+})
 test('an interactive run (--ui, --debug, --headed, PWDEBUG) has no run limit unless the env sets one', () => {
   // UI mode also opens with --ui-port / --ui-host alone, the inspector with --debug=cli
   for (const flag of [
@@ -373,12 +376,37 @@ test('a shard writes report-<i>-of-<n>.zip, and a runner-set PLAYWRIGHT_BLOB_OUT
     E2E_BLOB_DIR: blobs,
   })
   expect(r.code).toBe(0)
-  expect(readdirSync(blobs)).toEqual(['report-1-of-2.zip'])
+  expect(readdirSync(blobs)).toEqual([
+    expect.stringMatching(/^report-[0-9a-f]{8}-1-of-2\.zip$/),
+  ])
   const own = join(blobs, 'mine.zip')
   playwright(d, ['--project=chromium', 'a.spec.ts'], {
     PLAYWRIGHT_BLOB_OUTPUT_FILE: own,
     E2E_BLOB_DIR: blobs,
   })
   expect(existsSync(own)).toBe(true)
-  expect(readdirSync(blobs).sort()).toEqual(['mine.zip', 'report-1-of-2.zip'])
+  expect(readdirSync(blobs)).toContain('mine.zip')
+  expect(readdirSync(blobs)).toHaveLength(2)
+})
+test('a shared blob folder: shard 1/2 of two lanes (or two project sets) keep separate files, and the hash ignores --shard', () => {
+  const d = project({
+    'playwright.config.ts': cfg(),
+    'auth.setup.ts': setupSpec,
+    ...two,
+  })
+  const blobs = mkdtempSync(join(tmpdir(), 'e2e-blobs-'))
+  const run = (lane: string, shard: string) =>
+    playwright(d, ['--project=chromium', `--shard=${shard}`], {
+      E2E_LANE: lane,
+      E2E_BLOB_DIR: blobs,
+    })
+  run('gate', '1/2')
+  run('full', '1/2')
+  expect(readdirSync(blobs)).toHaveLength(2)
+  run('gate', '2/2')
+  const names = readdirSync(blobs).sort()
+  expect(names).toHaveLength(3)
+  const hash = (n: string) => n.split('-')[1]
+  const gate = names.filter((n) => /-(1|2)-of-2/.test(n))
+  expect(new Set(gate.map(hash)).size).toBe(2) // gate's two shards share one hash, full has another
 })
