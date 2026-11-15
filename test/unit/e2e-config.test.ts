@@ -82,12 +82,12 @@ test.describe('inherits real', { tag: '@real' }, () => {
   for (const lane of ['smoke', 'gate', 'full', 'real'])
     expect(inManual(lane)).toEqual([])
 })
-test('manual lane: per-lane maps accept it; no CI limits by default', () => {
+test('manual lane: per-lane maps accept it; no failure cap by default, a 60 min run limit', () => {
   const c = (opts: string, env: Record<string, string> = {}) =>
     resolved(opts, { E2E_LANE: 'manual', ...env })
   expect(c('workers: { manual: 1 }').workers).toBe(1)
   expect(c('', { CI: '1' }).maxFailures).toBe(0)
-  expect(c('', { CI: '1' }).globalTimeout).toBe(0)
+  expect(c('', { CI: '1' }).globalTimeout).toBe(60 * 60_000)
   expect(c('maxFailures: { manual: 2 }', { CI: '1' }).maxFailures).toBe(2)
 })
 test('an inherited property name is not a lane', () => {
@@ -220,21 +220,54 @@ test('E2E_VIDEO=1: video on + slowMo; opts win', () => {
   expect(off.launchOptions.slowMo).toBe(50)
   expect(proj(resolved(''), 'chromium').use.video).toBeUndefined()
 })
-test('failOnFlakyTests: only on CI and the smoke lane', () => {
-  expect(resolved('', { CI: '1', E2E_LANE: 'smoke' }).failOnFlakyTests).toBe(
-    true
-  )
-  expect(resolved('', { CI: '1' }).failOnFlakyTests).toBe(false)
-  expect(resolved('', { E2E_LANE: 'smoke' }).failOnFlakyTests).toBe(false)
+// Behavioural (a spec that fails once, then passes on its retry): older Playwright does not report failOnFlakyTests on the config
+test('failOnFlakyTests: a flaky smoke test fails a CI run, nowhere else', () => {
+  const d = project({
+    'playwright.config.ts': config('retries: 1'),
+    'auth.setup.ts': setupSpec,
+    'flaky.spec.ts': `import { test } from '@playwright/test'
+test('flaky @smoke', async ({}, info) => { if (info.retry === 0) throw new Error('first try') })
+`,
+  })
+  const run = (env: Record<string, string>) =>
+    playwright(d, ['--project=chromium'], env)
+  const ci = run({ CI: '1', E2E_LANE: 'smoke' })
+  expect(ci.out).toContain('1 flaky')
+  expect(ci.code).not.toBe(0)
+  expect(run({ CI: '1' }).code).toBe(0) // gate lane
+  expect(run({ E2E_LANE: 'smoke' }).code).toBe(0) // not CI
 })
-test('reporters: list; blob when sharded; html + json when E2E_REPORT_DIR', () => {
-  const names = (c: any) => c.reporter.map((r: any[]) => r[0])
+// the timeout reporter rides along with every globalTimeout (every run): asserted on its own below
+const reporterNames = (rs: any[][]) =>
+  rs
+    .map((r) => r[0])
+    .filter((n) => !n.endsWith('playwright-timeout-reporter.js'))
+test('reporters: list; blob when sharded; html + json + blob when E2E_REPORT_DIR', () => {
+  const names = (c: any) => reporterNames(c.reporter)
   expect(names(resolved(''))).toEqual(['list'])
   expect(names(resolved('', { E2E_SHARD: '1/2' }))).toEqual(['list', 'blob'])
   expect(names(resolved('', {}, ['--shard=1/1']))).toEqual(['list', 'blob'])
   const r = resolved('', { E2E_REPORT_DIR: '/tmp/e2e-rep' }).reporter
-  expect(r.map((x: any[]) => x[0])).toEqual(['list', 'html', 'json'])
-  expect(r[2][1].outputFile).toBe('/tmp/e2e-rep/results.json')
+  expect(reporterNames(r)).toEqual(['list', 'blob', 'html', 'json'])
+  expect(r.find((x: any[]) => x[0] === 'json')[1].outputFile).toBe(
+    '/tmp/e2e-rep/results.json'
+  )
+  expect(r.find((x: any[]) => x[0] === 'blob')[1].outputFile).toMatch(
+    /^\/tmp\/e2e-rep\/blob\/report\.zip$/
+  )
+})
+test('the timeout reporter carries the run limit and where it came from', () => {
+  const t = resolved('').reporter.find((r: any[]) =>
+    r[0].endsWith('playwright-timeout-reporter.js')
+  )
+  expect(t[1]).toEqual({
+    budgetMs: 60 * 60_000,
+    source: 'the gate lane default',
+  })
+  // no limit (turned off): no reporter to report one
+  expect(
+    resolved('', { E2E_GLOBAL_TIMEOUT: '0' }).reporter.map((r: any[]) => r[0])
+  ).toEqual(['list'])
 })
 test('a repo reporter wins over the harness reporters', () => {
   expect(
@@ -428,22 +461,6 @@ for (let i = 1; i <= 6; i++) test('fail ' + i + ' @smoke', async () => { throw n
   expect(r.out).toContain('3 failed')
   expect(r.out).toContain('did not run')
 })
-test('globalTimeout: per lane on CI (smoke 10 min, gate 60, full/real 120), unset off CI; repo wins', () => {
-  const gt = (opts: string, env: Record<string, string> = {}) =>
-    resolved(opts, env).globalTimeout
-  expect(gt('', { CI: '1', E2E_LANE: 'smoke' })).toBe(10 * 60_000)
-  expect(gt('', { CI: '1' })).toBe(60 * 60_000)
-  expect(gt('', { CI: '1', E2E_LANE: 'full' })).toBe(120 * 60_000)
-  expect(gt('', { CI: '1', E2E_LANE: 'real' })).toBe(120 * 60_000)
-  for (const lane of ['smoke', 'gate', 'full', 'real'])
-    expect(gt('', { E2E_LANE: lane })).toBe(0) // unset: Playwright reports 0 = no limit
-  expect(gt('globalTimeout: 5000')).toBe(5000) // set explicitly, it applies off CI too
-  expect(gt('globalTimeout: 5000', { CI: '1' })).toBe(5000)
-  expect(gt('globalTimeout: { gate: 7000 }')).toBe(7000)
-  expect(
-    gt('globalTimeout: { gate: 7000 }', { CI: '1', E2E_LANE: 'smoke' })
-  ).toBe(10 * 60_000)
-})
 test('a hung run ends at globalTimeout with the tests it finished', () => {
   const d = project({
     'playwright.config.ts': config('globalTimeout: 3000, timeout: 60000'),
@@ -458,14 +475,14 @@ test('hangs', async () => { await new Promise(() => {}) })
 })
 test('github reporter only when GITHUB_ACTIONS', () => {
   const names = (env: Record<string, string>) =>
-    resolved('', env).reporter.map((r: any[]) => r[0])
+    reporterNames(resolved('', env).reporter)
   expect(names({})).not.toContain('github')
   expect(names({ GITHUB_ACTIONS: 'true' })).toEqual(['list', 'github'])
 })
 
 test('blob reporter also on PLAYWRIGHT_BLOB_OUTPUT_FILE or E2E_BLOB=1, not only when sharded', () => {
   const names = (env: Record<string, string>) =>
-    resolved('', env).reporter.map((r: any[]) => r[0])
+    reporterNames(resolved('', env).reporter)
   expect(names({ PLAYWRIGHT_BLOB_OUTPUT_FILE: '/tmp/b/report-1.zip' })).toEqual(
     ['list', 'blob']
   )

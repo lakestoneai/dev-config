@@ -162,3 +162,60 @@ test('the default bound is 20 s', async () => {
   expect(Math.max(...delays)).toBeLessThanOrEqual(20_000)
   expect(Math.max(...delays)).toBeGreaterThan(19_000)
 })
+
+// -- 0.7.0: every probe is bounded, and a bound names what it waited for
+const flaky = (fail: number, status = 503) => {
+  let n = 0
+  const s = Bun.serve({
+    port: 0,
+    fetch: () =>
+      ++n <= fail ? new Response('no', { status }) : new Response('ok'),
+  })
+  afterAll(() => s.stop(true))
+  return { url: `http://127.0.0.1:${s.port}`, hits: () => n }
+}
+test('httpOk retries a stack that is still booting (5xx), then passes', async () => {
+  const s = flaky(2)
+  await run([httpOk(s.url, { retryDelayMs: 20 })])
+  expect(s.hits()).toBe(3)
+})
+test('httpOk gives up after its retries, naming the answer and the attempts', async () => {
+  const s = flaky(99)
+  const m = await message(
+    run([httpOk(s.url, { retries: 1, retryDelayMs: 20 })])
+  )
+  expect(m).toContain('answered HTTP 503 (2 attempts)')
+  expect(s.hits()).toBe(2)
+})
+test('httpOk does not retry a 4xx: it will not fix itself', async () => {
+  const s = flaky(99, 404)
+  const m = await message(run([httpOk(s.url, { retryDelayMs: 20 })]))
+  expect(m).toContain('answered HTTP 404')
+  expect(s.hits()).toBe(1)
+})
+test('httpOk: a server that never answers fails after timeoutMs per attempt, naming the wait', async () => {
+  const hung = Bun.serve({ port: 0, fetch: () => new Promise(() => {}) })
+  afterAll(() => hung.stop(true))
+  const t = Date.now()
+  const m = await message(
+    run([
+      httpOk(`http://127.0.0.1:${hung.port}`, {
+        timeoutMs: 300,
+        retries: 1,
+        retryDelayMs: 20,
+      }),
+    ])
+  )
+  expect(m).toContain('no answer within 300 ms (2 attempts)')
+  expect(Date.now() - t).toBeLessThan(3_000)
+})
+test('httpOk: a refused connection is retried and named by its cause', async () => {
+  const s = Bun.serve({ port: 0, fetch: () => new Response('x') })
+  const url = `http://127.0.0.1:${s.port}`
+  s.stop(true)
+  const m = await message(
+    run([httpOk(url, { retries: 1, retryDelayMs: 20, timeoutMs: 2_000 })])
+  )
+  expect(m).toMatch(/\(2 attempts\)/)
+  expect(m).not.toContain('did not finish')
+})

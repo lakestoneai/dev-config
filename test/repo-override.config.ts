@@ -7,5 +7,6 @@ export default defineConfig(playwrightDefaults, {
   timeout: 60_000,
   reporter: 'list',
   use: { actionTimeout: 3_000 },
+  expect: { toPass: { timeout: 3_000 } }, // a repo's own expect keeps winning over the defaults
   projects: [{ name: 'repo-override' }],
 })

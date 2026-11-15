@@ -9,7 +9,7 @@ export declare function custom(
 export declare function loopbackOnly(url: string): Check
 export declare function httpOk(
   url: string,
-  opts?: { timeoutMs?: number }
+  opts?: { timeoutMs?: number; retries?: number; retryDelayMs?: number }
 ): Check
 export declare function localSupabase(
   url: string,

@@ -15,6 +15,8 @@ const isFaviconFailure = (msg) =>
 
 const SESSION_KEY = /^sb-.+-auth-token(\.\d+)?$/
 const DEFAULT_SESSION_MARGIN_MS = 600_000
+const DEFAULT_LOGIN_TIMEOUT_MS = 30_000
+const CLOSE_TIMEOUT_MS = 10_000
 
 // expires_at (epoch seconds) of every Supabase session stored in a Playwright storage state: localStorage
 // `sb-<ref>-auth-token` (JSON) and cookies `sb-<ref>-auth-token[.n]` (@supabase/ssr: chunked, optional `base64-` prefix).
@@ -73,24 +75,66 @@ function sessionStale(file, marginMs) {
   }
 }
 
+// Rejects with `what` named when `work` is still running after `ms`; the timer never outlives the work.
+function bounded(work, ms, what) {
+  let timer
+  const limit = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${what} did not finish within ${ms} ms`)),
+      ms
+    )
+  })
+  return Promise.race([work, limit]).finally(() => clearTimeout(timer))
+}
+
 // Signs in as `account` and writes the state to `file` (own context: the project's use minus the config's storageState,
-// so a login never starts from another user's state).
+// so a login never starts from another user's state). Bounded by `auth.loginTimeoutMs` (default 30 s): a stuck
+// login() fails naming the account instead of spending the fixture's whole timeout. The context is closed on every
+// path (closing it also aborts a login() that is still running), and a close that hangs is warned about, not waited on.
 async function login(browser, auth, account, file, use) {
   mkdirSync(dirname(file), { recursive: true })
+  const ms = auth.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS
+  const who = account?.email ?? 'the account'
   const context = await browser.newContext({ ...use, storageState: undefined })
-  const page = await context.newPage()
   try {
-    await auth.login(page, account)
-    const init = account?.storageInit
-    if (typeof init === 'function') await init(page)
-    else if (init)
-      await page.evaluate((kv) => {
-        for (const [k, v] of Object.entries(kv)) localStorage.setItem(k, v)
-      }, init)
-    await context.storageState({ path: file })
+    const page = await context.newPage()
+    await bounded(
+      (async () => {
+        await auth.login(page, account)
+        const init = account?.storageInit
+        if (typeof init === 'function') await init(page)
+        else if (init)
+          await page.evaluate((kv) => {
+            for (const [k, v] of Object.entries(kv)) localStorage.setItem(k, v)
+          }, init)
+        await context.storageState({ path: file })
+      })(),
+      ms,
+      `signing in as ${who} (auth.loginTimeoutMs; login() is stuck)`
+    )
   } finally {
-    await context.close()
+    await bounded(
+      context.close(),
+      CLOSE_TIMEOUT_MS,
+      `closing the login context for ${who}`
+    ).catch((e) => console.warn(`[dev-config] ${e.message}`))
   }
+}
+
+// A login runs as a titled, boxed step: a failure or timeout in it names the account at the call site, not an
+// unrelated line of the test that happened to trigger it.
+const signIn = (who, work) =>
+  base.step(`dev-config: sign in as ${who}`, work, { box: true })
+
+// The allow-list a test runs with: the config/project's list plus the spec's own, so a spec widens it instead of
+// restating it. `consoleOptions: { replace: true, allow }` in a spec drops the config's entries (one that must
+// fail on an error the config allows). Deduplicated by source + flags.
+function mergeAllow(fromConfig, fromSpec) {
+  const own = fromSpec?.allow ?? []
+  const all = fromSpec?.replace ? own : [...(fromConfig?.allow ?? []), ...own]
+  return [
+    ...new Map(all.map((re) => [`${re.source}/${re.flags}`, re])).values(),
+  ]
 }
 
 /**
@@ -131,8 +175,10 @@ export function watchConsole(page, allow = []) {
  *      `login(page, account)`  signs in on a clean page; the harness then saves the storage state
  *      `sessionMarginMs`  (default 600000) a saved Supabase session (`sb-*-auth-token`, localStorage or cookie) that expires within
  *        this long is replaced by a fresh login, before the worker's first test and before each later one
- *  - `consoleOptions: { allow: RegExp[] }`  console error texts that do not fail a test (an object, because Playwright reads
- *      a bare two-element array option as a `[value, options]` pair)
+ *      `loginTimeoutMs`  (default 30000) bound on one sign-in (and on `accounts()`); a stuck login() fails naming the account
+ *  - `consoleOptions: { allow: RegExp[], replace?: boolean }`  console error texts that do not fail a test (an object, because
+ *      Playwright reads a bare two-element array option as a `[value, options]` pair). A spec's list is ADDED to the
+ *      config's; `replace: true` uses the spec's list alone
  * `account.storageInit` seeds localStorage after login, before the state is saved: `{ key: value }` or `async (page) => {}`.
  * Fixtures: `workerAuth` (worker), `consoleGuard` (auto), `owned(prefix)`.
  */
@@ -148,17 +194,24 @@ export const test = base.extend({
     async ({ browser, auth }, use, workerInfo) => {
       if (!auth) return use(undefined)
       const id = workerInfo.parallelIndex
-      const account = await auth.accounts(id)
+      const account = await bounded(
+        Promise.resolve(auth.accounts(id)),
+        auth.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
+        `auth.accounts(${id}) (auth.loginTimeoutMs)`
+      )
       const who = String(account?.email ?? 'account').replace(/[^\w.-]/g, '_')
       const file = resolve(
         workerInfo.project.outputDir,
         `.auth/${id}-${who}.json`
       )
       if (!existsSync(file))
-        await login(browser, auth, account, file, workerInfo.project.use)
+        await signIn(who, () =>
+          login(browser, auth, account, file, workerInfo.project.use)
+        )
       await use(file)
     },
-    { scope: 'worker', timeout: 60_000 },
+    // outer bound over accounts() + login() + context close; the inner bounds (auth.loginTimeoutMs) fire first
+    { scope: 'worker', timeout: 90_000 },
   ],
 
   // Per test: a Supabase session in the saved state is rotated by the tests that run (refresh-token rotation) and
@@ -169,8 +222,15 @@ export const test = base.extend({
       const configured = auth?.sessionMarginMs ?? DEFAULT_SESSION_MARGIN_MS
       const margin = marginTooLarge.has(workerAuth) ? 0 : configured
       if (workerAuth && sessionStale(workerAuth, margin)) {
-        const account = await auth.accounts(testInfo.parallelIndex)
-        await login(browser, auth, account, workerAuth, testInfo.project.use)
+        const account = await bounded(
+          Promise.resolve(auth.accounts(testInfo.parallelIndex)),
+          auth.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
+          `auth.accounts(${testInfo.parallelIndex}) (auth.loginTimeoutMs)`
+        )
+        await signIn(
+          `${account?.email ?? 'the account'} (session near expiry)`,
+          () => login(browser, auth, account, workerAuth, testInfo.project.use)
+        )
         if (margin > 0 && sessionStale(workerAuth, margin)) {
           marginTooLarge.add(workerAuth)
           console.warn(
@@ -180,13 +240,16 @@ export const test = base.extend({
       }
       await use(workerAuth ?? storageState)
     },
-    { timeout: 60_000 },
+    { timeout: 90_000 },
   ],
 
-  // Auto: a console error (or an uncaught page error) on any page of the test fails it, unless it matches `consoleAllow`.
+  // Auto: a console error (or an uncaught page error) on any page of the test fails it, unless it matches `consoleOptions.allow`.
   consoleGuard: [
-    async ({ context, consoleOptions }, use) => {
-      const allow = consoleOptions.allow ?? []
+    async ({ context, consoleOptions }, use, testInfo) => {
+      const allow = mergeAllow(
+        testInfo.project.use.consoleOptions,
+        consoleOptions
+      )
       const watchers = context.pages().map((p) => watchConsole(p, allow))
       context.on('page', (p) => watchers.push(watchConsole(p, allow)))
       await use()

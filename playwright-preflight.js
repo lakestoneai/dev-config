@@ -2,7 +2,8 @@
 //   // e2e/preflight.ts
 //   import { preflight, loopbackOnly, httpOk, localSupabase, commands } from '@lakestoneai/dev-config/playwright/preflight'
 //   export default preflight([loopbackOnly(url), httpOk(url), localSupabase(supabaseUrl), commands(['bun'])])
-// The whole run is bounded (default 20 s): checks still running at the deadline are reported as timed out.
+// The whole run is bounded (default 20 s): checks still running at the deadline are reported as timed out. Each
+// probe has its own bound too (httpOk: per attempt, `commands`: 5 s per lookup).
 import { execFileSync } from 'node:child_process'
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]'])
@@ -17,14 +18,40 @@ export const loopbackOnly = (url) =>
     if (!LOOPBACK.has(host)) throw new Error(`host ${host} is not loopback`)
   })
 
-/** The URL answers with a 2xx/3xx within `timeoutMs` (default 5 s). */
-export const httpOk = (url, { timeoutMs = 5_000 } = {}) =>
+/**
+ * The URL answers with a 2xx/3xx. Each attempt is bounded by `timeoutMs` (default 5 s); a refused connection, a
+ * timeout or a 5xx (a stack still booting) is retried `retries` more times (default 2) after `retryDelayMs`
+ * (default 500). A 4xx fails at once. With the defaults the check needs at most ~16 s, inside the 20 s preflight budget:
+ * raise the budget with `preflight(checks, { timeoutMs })` if you raise these.
+ */
+export const httpOk = (
+  url,
+  { timeoutMs = 5_000, retries = 2, retryDelayMs = 500 } = {}
+) =>
   custom(`httpOk(${url})`, async () => {
-    const res = await fetch(url, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-    if (res.status >= 400) throw new Error(`answered HTTP ${res.status}`)
+    let last = ''
+    for (let attempt = 1; attempt <= retries + 1; attempt++) {
+      let res
+      try {
+        res = await fetch(url, {
+          redirect: 'manual',
+          signal: AbortSignal.timeout(timeoutMs),
+        })
+      } catch (e) {
+        last =
+          e.name === 'TimeoutError'
+            ? `no answer within ${timeoutMs} ms`
+            : `${e.cause?.code ?? e.cause?.message ?? e.message}`
+      }
+      if (res) {
+        if (res.status < 400) return
+        last = `answered HTTP ${res.status}`
+        if (res.status < 500) throw new Error(last) // a client error will not fix itself
+      }
+      if (attempt <= retries)
+        await new Promise((r) => setTimeout(r, retryDelayMs))
+    }
+    throw new Error(`${last} (${retries + 1} attempts)`)
   })
 
 /** The Supabase URL is a local stack: loopback host, or `boxHost` (the testing box's IP) when given. */
@@ -42,7 +69,7 @@ export const commands = (bins) =>
     const lookup = process.platform === 'win32' ? 'where' : 'which'
     const missing = bins.filter((bin) => {
       try {
-        execFileSync(lookup, [bin], { stdio: 'ignore' })
+        execFileSync(lookup, [bin], { stdio: 'ignore', timeout: 5_000 }) // a hung lookup counts as missing
         return false
       } catch {
         return true

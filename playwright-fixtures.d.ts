@@ -21,6 +21,8 @@ export interface E2EAuth {
   login: (page: Page, account: E2EAccount) => Promise<void>
   /** A saved Supabase session (`sb-*-auth-token`) expiring within this many ms is replaced by a fresh login, before each test. Default 600000 */
   sessionMarginMs?: number
+  /** Bound (ms) on one sign-in and on `accounts()`; a stuck `login()` fails naming the account. Default 30000 */
+  loginTimeoutMs?: number
 }
 export interface ConsoleWatch {
   errors: string[]
@@ -32,7 +34,8 @@ export declare function watchConsole(page: Page, allow?: RegExp[]): ConsoleWatch
 export declare const test: TestType<
   PlaywrightTestArgs &
     PlaywrightTestOptions & {
-      consoleOptions: { allow?: RegExp[] }
+      /** `allow` adds to the config's list; `replace: true` uses the spec's alone */
+      consoleOptions: { allow?: RegExp[]; replace?: boolean }
       consoleGuard: void
       /** `owned('Quote')` -> `Quote-w2-a1b2c3d4-1`, then `-2`…: unique per worker, test and call */
       owned: (prefix: string) => string

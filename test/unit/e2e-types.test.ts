@@ -7,13 +7,14 @@ setDefaultTimeout(60_000)
 const made: string[] = []
 afterAll(() => made.forEach((d) => rmSync(d, { recursive: true, force: true })))
 
-const tsc = (code: string) => {
+const tsc = (code: string, compilerOptions: object = {}) => {
   const dir = mkdtempSync(join(import.meta.dir, 'fixtures/tsc-'))
   made.push(dir)
   writeFileSync(
     join(dir, 'tsconfig.json'),
     JSON.stringify({
       extends: '@lakestoneai/dev-config/tsconfig/strict.json',
+      compilerOptions,
       include: ['*.ts'],
     })
   )
@@ -67,4 +68,65 @@ export default defineE2EConfig({ use: { auth } })
 `)
   expect(r.out).toBe('')
   expect(r.code).toBe(0)
+})
+
+test('0.7.0 types: any Playwright video value, globalSetup arrays, per-lane timeout, replace, loginTimeoutMs, httpOk retries', () => {
+  const r =
+    tsc(`import { defineE2EConfig, expectedDurationMs, budgetFromExpected } from '@lakestoneai/dev-config/playwright'
+import { httpOk } from '@lakestoneai/dev-config/playwright/preflight'
+import { test, type E2EAuth } from '@lakestoneai/dev-config/playwright/fixtures'
+import TimeoutReporter from '@lakestoneai/dev-config/playwright/timeout-reporter'
+const auth: E2EAuth = { accounts: () => ({ email: 'a', password: 'p' }), login: async () => {}, loginTimeoutMs: 5000 }
+export default defineE2EConfig({
+  video: { mode: 'on', size: { width: 640, height: 360 } },
+  globalSetup: ['./a.ts', './b.ts'],
+  timeout: { default: 30_000, real: 90_000 },
+  globalTimeout: { smoke: 1 },
+  use: { auth, consoleOptions: { allow: [/x/], replace: true } },
+})
+test.use({ consoleOptions: { allow: [/x/], replace: true } })
+httpOk('http://x', { timeoutMs: 1, retries: 1, retryDelayMs: 1 })
+budgetFromExpected(expectedDurationMs(new Map([['a', 1]]), { workers: 1, shards: 1 }))
+new TimeoutReporter({ budgetMs: 1, source: 's' })
+`)
+  expect(r.out).toBe('')
+  expect(r.code).toBe(0)
+})
+test('0.7.0 types: a non-number timeout, an unknown lane in timeout, and a non-boolean replace are errors', () => {
+  for (const bad of [
+    `defineE2EConfig({ timeout: 'slow' })`,
+    `defineE2EConfig({ timeout: { nightly: 1 } })`,
+    `defineE2EConfig({ use: { consoleOptions: { replace: 'yes' } } })`,
+  ]) {
+    const r = tsc(
+      `import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'\n${bad}\n`
+    )
+    expect(r.code).not.toBe(0)
+  }
+})
+test("video is checked against Playwright's real video type: a bad mode is an error, even with skipLibCheck on", () => {
+  // `PlaywrightTestOptions['video']` is not a key (video lives in PlaywrightWorkerOptions); under the house
+  // skipLibCheck the lookup silently becomes `any` and accepts anything. The expect-error line fails if it does.
+  const r =
+    tsc(`import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'
+// @ts-expect-error not a video mode
+defineE2EConfig({ video: 'not-a-mode' })
+defineE2EConfig({ video: 'on' })
+`)
+  expect(r.out).toBe('')
+  expect(r.code).toBe(0)
+})
+test('the package declarations compile with skipLibCheck off (a type that does not exist is an error in them)', () => {
+  const r = tsc(
+    `import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'
+export default defineE2EConfig({ video: 'on' })
+`,
+    { skipLibCheck: false }
+  )
+  expect(r.out).toBe('')
+  expect(r.code).toBe(0)
+})
+test('./package.json is an export, so tools that read the package version can resolve it', () => {
+  const p = require('@lakestoneai/dev-config/package.json')
+  expect(p.name).toBe('@lakestoneai/dev-config')
 })

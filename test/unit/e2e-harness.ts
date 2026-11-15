@@ -51,6 +51,9 @@ export function playwright(
     'E2E_SHARD_TIMINGS',
     'E2E_BLOB',
     'PLAYWRIGHT_BLOB_OUTPUT_FILE',
+    'E2E_BLOB_DIR',
+    'E2E_GLOBAL_TIMEOUT',
+    'PWDEBUG',
   ])
     delete clean[k]
   const r = Bun.spawnSync(['bunx', 'playwright', 'test', ...args], {
@@ -87,3 +90,8 @@ test('narrow critical @mobile @smoke', async () => {})
 export const setupSpec = `import { test } from '@playwright/test'
 test('auth', async () => {})
 `
+
+/** Minor version of the installed @playwright/test (1.x): the peer floor is run in CI, so version-gated tests skip below it. */
+export const pwMinor = Number(
+  (require('@playwright/test/package.json').version as string).split('.')[1]
+)

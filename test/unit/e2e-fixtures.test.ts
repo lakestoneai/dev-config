@@ -547,3 +547,85 @@ test('workerAuth: after the margin warning, a session that really expires is sti
   expect(seenTokens(d)).toEqual(['a1', 'a2', 'a2'])
   expect(r.out.match(/already inside sessionMarginMs/g)?.length).toBe(1)
 })
+
+// -- 0.7.0: nothing hangs
+const stuckLogin = (
+  cfgOpts: string,
+  accounts = "({ email: 'stuck@example.test', password: 'pw' })"
+) => ({
+  'playwright.config.ts': cfg(cfgOpts),
+  'fixtures.ts': fx,
+  ...noSetup,
+  'a.spec.ts': `import { test } from './fixtures'
+test.use({ auth: {
+  loginTimeoutMs: 1500,
+  accounts: () => ${accounts},
+  login: async () => { await new Promise(() => {}) },
+} })
+test('first', async ({ page }) => { void page })
+`,
+})
+test('workerAuth: a login that never returns fails in auth.loginTimeoutMs, naming the account, as a titled step', () => {
+  const d = project(stuckLogin('workers: 1'))
+  const t = Date.now()
+  const r = playwright(d, ['--project=chromium'])
+  expect(Date.now() - t).toBeLessThan(45_000) // not the 90 s fixture limit, let alone the test timeout
+  expect(r.out).toContain('1 failed')
+  expect(r.out).toContain(
+    'signing in as stuck@example.test (auth.loginTimeoutMs; login() is stuck) did not finish within 1500 ms'
+  )
+  expect(r.out).not.toContain('can only be called from a test') // the step wrapper itself works in a worker fixture
+})
+test('workerAuth: an accounts() that never returns is bounded the same way', () => {
+  const d = project(stuckLogin('workers: 1', 'new Promise(() => {})'))
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.out).toContain(
+    'auth.accounts(0) (auth.loginTimeoutMs) did not finish within 1500 ms'
+  )
+})
+
+const consoleCase = (config: string, spec: string) =>
+  project({
+    'playwright.config.ts': cfg(config),
+    'fixtures.ts': fx,
+    ...noSetup,
+    'a.spec.ts': `import { test } from './fixtures'
+${spec}
+test('logs A and B', async ({ page }) => {
+  await page.setContent('<p>x</p>')
+  await page.evaluate(() => { console.error('error A'); console.error('error B') })
+})
+`,
+  })
+const inConfig = `use: { consoleOptions: { allow: [/error A/] } }`
+test('consoleOptions: a spec list is ADDED to the config list', () => {
+  const d = consoleCase(
+    inConfig,
+    `test.use({ consoleOptions: { allow: [/error B/] } })`
+  )
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.out).toContain('2 passed')
+  expect(r.code).toBe(0)
+})
+test('consoleOptions: the config list still applies when the spec sets none; an entry the spec repeats is not doubled', () => {
+  const none = consoleCase(inConfig, '')
+  const r = playwright(none, ['--project=chromium'])
+  expect(r.out).toContain('1 failed') // B is not allowed
+  expect(r.out).toContain('error B')
+  expect(r.out).not.toContain('error A\n') // A is allowed by the config
+  const dup = consoleCase(
+    inConfig,
+    `test.use({ consoleOptions: { allow: [/error A/, /error B/] } })`
+  )
+  expect(playwright(dup, ['--project=chromium']).code).toBe(0)
+})
+test('consoleOptions: replace: true uses the spec list alone, so a config-allowed error fails', () => {
+  const d = consoleCase(
+    inConfig,
+    `test.use({ consoleOptions: { allow: [/error B/], replace: true } })`
+  )
+  const r = playwright(d, ['--project=chromium'])
+  expect(r.out).toContain('1 failed')
+  expect(r.out).toContain('console.error: error A')
+  expect(r.out).not.toContain('console.error: error B')
+})
