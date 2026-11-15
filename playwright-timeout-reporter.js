@@ -25,7 +25,7 @@ export default class TimeoutReporter {
     const { budgetMs, source } = this.#options
     const lines = [...this.#running.values()].map(
       (t) =>
-        `  - ${t.parent.project()?.name ?? '?'} › ${t.titlePath().slice(1).join(' › ')}`
+        `  - ${t.parent.project()?.name ?? '?'} › ${t.titlePath().slice(2).join(' › ')}`
     )
     console.error(
       `\n[dev-config] the whole run hit its ${budgetMs ? secs(budgetMs) : ''} limit (${source ?? 'globalTimeout'}).` +

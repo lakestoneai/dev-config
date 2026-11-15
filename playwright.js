@@ -4,6 +4,7 @@
 // Playwright's own default for action/navigation timeouts and for expect.toPass is 0 = wait forever, which hangs
 // agents and scripted runs (they have no per-test timeout). README "Timeouts" lists every bound.
 import { defineConfig, devices } from '@playwright/test'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { timingsFromReport } from './playwright-shard-reporter.js'
@@ -28,7 +29,8 @@ const TEST_TIMEOUT = 30_000 // Playwright's own default, made explicit so a lane
 const BUDGET_FACTOR = 3
 const BUDGET_FLOOR_MS = 5 * 60_000
 // Interactive runs have a person at the keyboard: no run cap (`--debug` already sets timeout 0 itself)
-const INTERACTIVE_ARGS = ['--ui', '--debug', '--headed']
+// (`--ui-port`/`--ui-host` open UI mode on their own, `--debug=cli` is the inspector's cli mode)
+const INTERACTIVE_ARG = /^--(ui|ui-port|ui-host|debug|headed)(=|$)/
 
 /** @type {import('@playwright/test').PlaywrightTestConfig} */
 export const playwrightDefaults = {
@@ -76,7 +78,7 @@ function shardCount(argv, env) {
 
 // Where a run's globalTimeout comes from, and how long it is: E2E_GLOBAL_TIMEOUT (minutes, 0 = off) > the repo's
 // value > a budget derived from E2E_SHARD_TIMINGS > the lane's fixed number. Interactive runs get none unless the env says so.
-function globalBudget({ env, argv, lane, repoValue, workers, shard }) {
+function globalBudget({ env, argv, lane, repoValue, workers, shard, sharded }) {
   if (env.E2E_GLOBAL_TIMEOUT !== undefined && env.E2E_GLOBAL_TIMEOUT !== '') {
     const min = Number(env.E2E_GLOBAL_TIMEOUT)
     if (!Number.isFinite(min) || min < 0)
@@ -90,7 +92,7 @@ function globalBudget({ env, argv, lane, repoValue, workers, shard }) {
           source: `E2E_GLOBAL_TIMEOUT=${min} min`,
         }
   }
-  if (argv.some((a) => INTERACTIVE_ARGS.includes(a)) || env.PWDEBUG) return {}
+  if (argv.some((a) => INTERACTIVE_ARG.test(a)) || env.PWDEBUG) return {}
   if (repoValue !== undefined)
     return repoValue
       ? { ms: repoValue, source: "the repo's globalTimeout" }
@@ -105,10 +107,15 @@ function globalBudget({ env, argv, lane, repoValue, workers, shard }) {
           workers: typeof workers === 'number' ? workers : 1,
           shards: shard?.total ?? 1,
         })
-        return {
-          ms: budgetFromExpected(expected),
-          source: `derived from E2E_SHARD_TIMINGS: expected ${Math.round(expected / 1000)} s x ${BUDGET_FACTOR}, floor ${BUDGET_FLOOR_MS / 60_000} min`,
-        }
+        // A shard runs a fraction of the suite, so its limit is the derived one. An unsharded run may be using a
+        // timings file from a smaller run (a smoke report, a file-filtered run): never cap it below the lane's number.
+        const derived = budgetFromExpected(expected)
+        const floor = sharded ? 0 : (GLOBAL_TIMEOUT[lane] ?? 0)
+        if (derived >= floor)
+          return {
+            ms: derived,
+            source: `derived from E2E_SHARD_TIMINGS: expected ${Math.round(expected / 1000)} s x ${BUDGET_FACTOR}, floor ${BUDGET_FLOOR_MS / 60_000} min`,
+          }
       }
     } catch {
       // absent or unreadable timings: the lane's fixed number
@@ -175,6 +182,7 @@ export function defineE2EConfig(opts = {}) {
     repoValue: perLane(globalTimeout),
     workers: perLane(workers),
     shard,
+    sharded,
   })
 
   const reporter = [['list']]
@@ -192,7 +200,7 @@ export function defineE2EConfig(opts = {}) {
     env.PLAYWRIGHT_BLOB_OUTPUT_FILE ||
     env.E2E_BLOB === '1'
   )
-    reporter.push(['blob', blobOptions(env, shard)])
+    reporter.push(['blob', blobOptions(env, shard, process.argv)])
   // Opt-in duration-aware sharding: E2E_SHARD_TIMINGS = a previous JSON report. Absent (or no --shard), Playwright's own count sharding runs.
   if (sharded && env.E2E_SHARD_TIMINGS) reporter.push([SHARD_REPORTER])
   if (env.E2E_REPORT_DIR) {
@@ -275,29 +283,43 @@ export function defineE2EConfig(opts = {}) {
   })
   // defineConfig merges `expect` one level deep: a repo's `expect: { toPass: { intervals } }` would replace the whole
   // toPass default and bring back its 0 = forever. Keep the bound unless the repo gave one.
-  if (config.expect?.toPass && config.expect.toPass.timeout === undefined)
-    config.expect = {
-      ...config.expect,
-      toPass: { timeout: TOPASS_TIMEOUT, ...config.expect.toPass },
-    }
+  const withBound = (e) =>
+    e.toPass?.timeout === undefined
+      ? { ...e, toPass: { timeout: TOPASS_TIMEOUT, ...e.toPass } }
+      : e
+  if (config.expect?.toPass) config.expect = withBound(config.expect)
+  // A project's own `expect` REPLACES the config's in Playwright (it is not merged), so it needs the bound too.
+  config.projects = config.projects?.map((p) =>
+    p.expect ? { ...p, expect: withBound(p.expect) } : p
+  )
   return config
 }
 
 // One blob FILE per run, never a shared folder's default name: from 1.65 the blob reporter deletes its output
 // DIRECTORY before writing (release notes 1.65), so N runs that write into one `outputDir` keep only the last. An
-// `outputFile` is not wiped (measured on 1.65.1), so each run owns its file: `report-<i>-of-<n>.zip` for a shard
-// (a rerun of the same shard replaces itself), `report-<pid>-<time>.zip` otherwise. Folder: E2E_BLOB_DIR, else
-// `<E2E_REPORT_DIR>/blob` (each run owns its report dir), else `blob-report`. A runner's own
-// PLAYWRIGHT_BLOB_OUTPUT_FILE is left alone.
-function blobOptions(env, shard) {
+// `outputFile` is not wiped (measured on 1.65.1), so each run owns its file. Folder, and the name in it:
+//  - `<E2E_REPORT_DIR>/blob` (the run owns the folder; the testing box reuses it every run): a STABLE name, so the
+//    next run replaces the last blob instead of piling up next to it and a merge never sees an old run. A shard:
+//    `report-<i>-of-<n>.zip`, otherwise `report.zip`.
+//  - E2E_BLOB_DIR, or `blob-report` (a folder several runs share): a name from the invocation (lane + CLI args, like
+//    Playwright's own hash), so the same run replaces itself and another file list adds its own file.
+// A runner's own PLAYWRIGHT_BLOB_OUTPUT_FILE is left alone.
+function blobOptions(env, shard, argv) {
   if (env.PLAYWRIGHT_BLOB_OUTPUT_FILE) return {}
+  const runOwned = !env.E2E_BLOB_DIR && env.E2E_REPORT_DIR
   const dir =
     env.E2E_BLOB_DIR ||
-    (env.E2E_REPORT_DIR ? `${env.E2E_REPORT_DIR}/blob` : 'blob-report')
+    (runOwned ? `${env.E2E_REPORT_DIR}/blob` : 'blob-report')
+  const invocation = createHash('sha1')
+    .update(JSON.stringify([env.E2E_LANE ?? '', argv.slice(2)]))
+    .digest('hex')
+    .slice(0, 8)
   const name = shard
     ? `${shard.current}-of-${shard.total}`
-    : `${process.pid}-${Date.now()}`
-  return { outputFile: `${dir}/report-${name}.zip` }
+    : runOwned
+      ? ''
+      : invocation
+  return { outputFile: `${dir}/report${name && `-${name}`}.zip` }
 }
 
 // Whole tag tokens only. Playwright greps "<project> <file> <describe> <title> <tags>" joined by spaces, so a bare

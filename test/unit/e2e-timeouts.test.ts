@@ -20,7 +20,7 @@ const evalDir = project({
   'eval.ts': `for (const a of JSON.parse(process.env.EVAL_ARGV ?? '[]')) process.argv.push(a)
 const { defineE2EConfig } = await import('@lakestoneai/dev-config/playwright')
 const c = defineE2EConfig(eval('({' + (process.env.EVAL_OPTS ?? '') + '})'))
-console.log(JSON.stringify({ globalTimeout: c.globalTimeout, timeout: c.timeout, expect: c.expect, reporter: c.reporter }))
+console.log(JSON.stringify({ globalTimeout: c.globalTimeout, timeout: c.timeout, expect: c.expect, reporter: c.reporter, projects: c.projects.map((p) => ({ name: p.name, expect: p.expect })) }))
 `,
 })
 function resolved(
@@ -73,8 +73,17 @@ test('E2E_GLOBAL_TIMEOUT (minutes) beats the lane and the repo; 0 turns it off; 
   )
 })
 test('an interactive run (--ui, --debug, --headed, PWDEBUG) has no run limit unless the env sets one', () => {
-  for (const flag of ['--ui', '--debug', '--headed'])
+  // UI mode also opens with --ui-port / --ui-host alone, the inspector with --debug=cli
+  for (const flag of [
+    '--ui',
+    '--debug',
+    '--headed',
+    '--ui-port=8080',
+    '--ui-host=0.0.0.0',
+    '--debug=cli',
+  ])
     expect(gt('', {}, ['test', flag]) ?? 0).toBe(0)
+  expect(gt('', {}, ['test', '--debugger-not-a-flag'])).toBe(60 * MIN)
   expect(gt('', { PWDEBUG: '1' }) ?? 0).toBe(0)
   expect(gt('globalTimeout: 5000', {}, ['--ui']) ?? 0).toBe(0)
   expect(gt('', { E2E_GLOBAL_TIMEOUT: '5' }, ['--ui'])).toBe(5 * MIN)
@@ -120,6 +129,20 @@ test('with E2E_SHARD_TIMINGS the limit is expected wall time x 3 (all time over 
   // no shard info: the whole suite over the workers: 40 / 2 = 20 min x 3
   expect(gt('workers: 2', { E2E_SHARD_TIMINGS: t })).toBe(60 * MIN)
 })
+test('unsharded, a derived limit never drops below the lane limit: a partial timings file (a smoke report, a file-filtered run) must not cap a full run', () => {
+  const partial = report({ 'a.spec.ts': MIN })
+  expect(gt('workers: 2', { E2E_SHARD_TIMINGS: partial })).toBe(60 * MIN)
+  expect(
+    gt('workers: 2', { E2E_SHARD_TIMINGS: partial, E2E_LANE: 'smoke' })
+  ).toBe(10 * MIN)
+  // sharded, the same file does set the limit (floor 5 min): each shard runs a fraction of the suite
+  expect(
+    gt('workers: 2', { E2E_SHARD_TIMINGS: partial }, ['--shard=1/4'])
+  ).toBe(5 * MIN)
+  // a suite that outgrew the lane (derived 90 min > gate 60) keeps its larger derived limit
+  const big = report({ 'a.spec.ts': 30 * MIN })
+  expect(gt('workers: 2', { E2E_SHARD_TIMINGS: big })).toBe(90 * MIN)
+})
 test('the longest single file bounds the estimate (a file never splits across workers)', () => {
   const t = report({
     'slow.spec.ts': 20 * MIN,
@@ -132,7 +155,7 @@ test('the longest single file bounds the estimate (a file never splits across wo
 })
 test('the derived limit never drops under 5 min; a bad timings file falls back to the lane number; the repo and the env still win', () => {
   const tiny = report({ 'a.spec.ts': 2_000 })
-  expect(gt('', { E2E_SHARD_TIMINGS: tiny })).toBe(5 * MIN)
+  expect(gt('', { E2E_SHARD_TIMINGS: tiny }, ['--shard=1/2'])).toBe(5 * MIN)
   expect(gt('', { E2E_SHARD_TIMINGS: '/nonexistent.json' })).toBe(60 * MIN)
   const junk = join(mkdtempSync(join(tmpdir(), 'e2e-timings-')), 'x.json')
   writeFileSync(junk, 'not json')
@@ -166,6 +189,27 @@ test('a repo that tunes toPass without a timeout keeps the 20 s bound (defineCon
   ).toEqual({ timeout: 5000 })
 })
 
+test("a repo project's own expect replaces the config's in Playwright, so each project keeps the toPass bound too", () => {
+  const p = (opts: string) => resolved(opts).projects
+  const byName = (ps: any[], n: string) => ps.find((x) => x.name === n)
+  const ps = p(`projects: [
+    { name: 'a', expect: { timeout: 10000 } },
+    { name: 'b', expect: { toPass: { intervals: [100] } } },
+    { name: 'c', expect: { toPass: { timeout: 5000 } } },
+    { name: 'd' },
+  ]`)
+  expect(byName(ps, 'a').expect).toEqual({
+    timeout: 10000,
+    toPass: { timeout: 20_000 },
+  })
+  expect(byName(ps, 'b').expect.toPass).toEqual({
+    timeout: 20_000,
+    intervals: [100],
+  })
+  expect(byName(ps, 'c').expect.toPass).toEqual({ timeout: 5000 })
+  expect(byName(ps, 'd').expect).toBeUndefined() // inherits the config's
+})
+
 // -- the run limit, end to end
 const hang = `import { test } from '@playwright/test'
 test('hangs forever in node', async () => { await new Promise(() => {}) })
@@ -184,7 +228,10 @@ test('a hung run ends at the limit and names the budget, its source and the runn
     "the whole run hit its 3 s limit (the repo's globalTimeout)"
   )
   expect(r.out).toContain('Still running:')
-  expect(r.out).toContain('chromium › h.spec.ts › hangs forever in node')
+  expect(r.out).toContain(
+    '\n  - chromium › h.spec.ts › hangs forever in node\n'
+  )
+  expect(r.out).not.toContain('chromium › chromium')
   expect(r.out).toContain('E2E_GLOBAL_TIMEOUT=<minutes>')
 })
 test('the box runs (no CI) are capped: E2E_GLOBAL_TIMEOUT=0.05 ends the same hang with the env as its source', () => {
@@ -215,6 +262,25 @@ test('a hung global setup is bounded by the run limit too', () => {
   expect(r.code).not.toBe(0)
   expect(r.out).toContain('Timed out waiting 3s for the global setup')
   expect(r.out).toContain('No test was running')
+})
+
+test('a hung global teardown is bounded by the run limit too', () => {
+  const d = project({
+    'playwright.config.ts': cfg(
+      'globalTimeout: 4000, globalTeardown: "./hang.teardown.ts"'
+    ),
+    'auth.setup.ts': setupSpec,
+    'hang.teardown.ts':
+      'export default async () => { await new Promise(() => {}) }\n',
+    'a.spec.ts': `import { test } from '@playwright/test'\ntest('passes', async () => {})\n`,
+  })
+  const t = Date.now()
+  const r = playwright(d, ['--project=chromium'])
+  expect(Date.now() - t).toBeLessThan(60_000)
+  expect(r.code).not.toBe(0)
+  expect(r.out).toContain(
+    'Timed out waiting 4s for the teardown for global teardown'
+  )
 })
 
 // -- blob: one file per run
@@ -260,8 +326,41 @@ test('E2E_REPORT_DIR alone writes a blob under <dir>/blob, with no env var to re
   })
   expect(r.code).toBe(0)
   const files = readdirSync(`${rep}/blob`)
-  expect(files).toHaveLength(1)
-  expect(files[0]).toMatch(/^report-\d+-\d+\.zip$/)
+  expect(files).toEqual(['report.zip'])
+})
+test('a run-owned E2E_REPORT_DIR reused by the next run keeps ONE blob, so a rsync of the dir never merges old runs', () => {
+  const d = project({
+    'playwright.config.ts': cfg(),
+    'auth.setup.ts': setupSpec,
+    ...two,
+  })
+  const rep = mkdtempSync(join(tmpdir(), 'e2e-rep-'))
+  for (const file of ['a.spec.ts', 'b.spec.ts']) {
+    const r = playwright(d, ['--project=chromium', file], {
+      E2E_REPORT_DIR: rep,
+    })
+    expect(r.code).toBe(0)
+  }
+  expect(readdirSync(`${rep}/blob`)).toEqual(['report.zip'])
+  expect(mergeCount(`${rep}/blob`)).toContain('in b')
+})
+test('a shared blob folder: the same invocation replaces its own blob, another file list adds one', () => {
+  const d = project({
+    'playwright.config.ts': cfg(),
+    'auth.setup.ts': setupSpec,
+    ...two,
+  })
+  const blobs = mkdtempSync(join(tmpdir(), 'e2e-blobs-'))
+  const run = (file: string) =>
+    playwright(d, ['--project=chromium', file], {
+      E2E_BLOB: '1',
+      E2E_BLOB_DIR: blobs,
+    })
+  run('a.spec.ts')
+  run('a.spec.ts')
+  expect(readdirSync(blobs)).toHaveLength(1)
+  run('b.spec.ts')
+  expect(readdirSync(blobs)).toHaveLength(2)
 })
 test('a shard writes report-<i>-of-<n>.zip, and a runner-set PLAYWRIGHT_BLOB_OUTPUT_FILE is left alone', () => {
   const d = project({

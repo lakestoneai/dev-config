@@ -145,7 +145,7 @@ test('no timings file, or an unreadable one: built-in count sharding', () => {
   expect(runShards(3, { E2E_SHARD_TIMINGS: junk })).toEqual(builtin)
 })
 
-test('without --shard the timings file changes nothing', () => {
+test('without --shard the timings file does not change which tests run (it only feeds the run limit)', () => {
   const r = playwright(dir, ['--project=chromium'], {
     E2E_SHARD_TIMINGS: timingsFile,
   })

@@ -253,7 +253,7 @@ test('reporters: list; blob when sharded; html + json + blob when E2E_REPORT_DIR
     '/tmp/e2e-rep/results.json'
   )
   expect(r.find((x: any[]) => x[0] === 'blob')[1].outputFile).toMatch(
-    /^\/tmp\/e2e-rep\/blob\/report-\d+-\d+\.zip$/
+    /^\/tmp\/e2e-rep\/blob\/report\.zip$/
   )
 })
 test('the timeout reporter carries the run limit and where it came from', () => {

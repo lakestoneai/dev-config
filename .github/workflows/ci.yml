@@ -20,12 +20,16 @@ jobs:
   # so that job keeps its name for the ruleset's required check. `--no-save` leaves package.json and bun.lock alone.
   playwright-range:
     name: playwright ${{ matrix.playwright }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        playwright: ['1.52.0', latest]
+        # ubuntu-latest is 26.04, which Playwright 1.52 cannot install Chromium on ("does not support chromium on
+        # ubuntu26.04-x64"): the floor runs on the 24.04 it supports, the newest release on the newest runner
+        include:
+          - { playwright: '1.52.0', os: ubuntu-24.04 }
+          - { playwright: latest, os: ubuntu-latest }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Playwright 1.52 hangs on Node 24+ (measured locally: `playwright test --list` never returns, and its browser
