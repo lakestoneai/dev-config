@@ -92,83 +92,6 @@ test('an interactive run (--ui, --debug, --headed, PWDEBUG) has no run limit unl
   expect(gt('', { E2E_GLOBAL_TIMEOUT: '5' }, ['--ui'])).toBe(5 * MIN)
 })
 
-// -- smart lane budget from E2E_SHARD_TIMINGS
-const report = (files: Record<string, number>) => {
-  const f = join(mkdtempSync(join(tmpdir(), 'e2e-timings-')), 'results.json')
-  writeFileSync(
-    f,
-    JSON.stringify({
-      suites: Object.entries(files).map(([file, ms]) => ({
-        file,
-        specs: [
-          {
-            file,
-            tests: [{ projectName: 'chromium', results: [{ duration: ms }] }],
-          },
-        ],
-      })),
-    })
-  )
-  return f
-}
-test('with E2E_SHARD_TIMINGS the limit is expected wall time x 3 (all time over workers x shards)', () => {
-  // 4 files x 10 min over 2 workers x 2 shards = 10 min; x3 = 30 min (the gate lane's fixed number is 60)
-  const t = report({
-    'a.spec.ts': 10 * MIN,
-    'b.spec.ts': 10 * MIN,
-    'c.spec.ts': 10 * MIN,
-    'd.spec.ts': 10 * MIN,
-  })
-  expect(gt('workers: 2', { E2E_SHARD_TIMINGS: t }, ['--shard=1/2'])).toBe(
-    30 * MIN
-  )
-  // the shard count also comes from E2E_SHARD=i/n and from `--shard i/n`
-  expect(gt('workers: 2', { E2E_SHARD_TIMINGS: t, E2E_SHARD: '1/2' })).toBe(
-    30 * MIN
-  )
-  expect(gt('workers: 2', { E2E_SHARD_TIMINGS: t }, ['--shard', '1/2'])).toBe(
-    30 * MIN
-  )
-  // no shard info: the whole suite over the workers: 40 / 2 = 20 min x 3
-  expect(gt('workers: 2', { E2E_SHARD_TIMINGS: t })).toBe(60 * MIN)
-})
-test('unsharded, a derived limit never drops below the lane limit: a partial timings file (a smoke report, a file-filtered run) must not cap a full run', () => {
-  const partial = report({ 'a.spec.ts': MIN })
-  expect(gt('workers: 2', { E2E_SHARD_TIMINGS: partial })).toBe(60 * MIN)
-  expect(
-    gt('workers: 2', { E2E_SHARD_TIMINGS: partial, E2E_LANE: 'smoke' })
-  ).toBe(10 * MIN)
-  // sharded, the same file does set the limit (floor 5 min): each shard runs a fraction of the suite
-  expect(
-    gt('workers: 2', { E2E_SHARD_TIMINGS: partial }, ['--shard=1/4'])
-  ).toBe(5 * MIN)
-  // a suite that outgrew the lane (derived 90 min > gate 60) keeps its larger derived limit
-  const big = report({ 'a.spec.ts': 30 * MIN })
-  expect(gt('workers: 2', { E2E_SHARD_TIMINGS: big })).toBe(90 * MIN)
-})
-test('the longest single file bounds the estimate (a file never splits across workers)', () => {
-  const t = report({
-    'slow.spec.ts': 20 * MIN,
-    'a.spec.ts': MIN,
-    'b.spec.ts': MIN,
-    'c.spec.ts': MIN,
-  })
-  // spread: 23 / (4 workers x 1) = 5.75 min, but one file takes 20 min: 3 x 20
-  expect(gt('workers: 4', { E2E_SHARD_TIMINGS: t })).toBe(60 * MIN)
-})
-test('the derived limit never drops under 5 min; a bad timings file falls back to the lane number; the repo and the env still win', () => {
-  const tiny = report({ 'a.spec.ts': 2_000 })
-  expect(gt('', { E2E_SHARD_TIMINGS: tiny }, ['--shard=1/2'])).toBe(5 * MIN)
-  expect(gt('', { E2E_SHARD_TIMINGS: '/nonexistent.json' })).toBe(60 * MIN)
-  const junk = join(mkdtempSync(join(tmpdir(), 'e2e-timings-')), 'x.json')
-  writeFileSync(junk, 'not json')
-  expect(gt('', { E2E_SHARD_TIMINGS: junk, E2E_LANE: 'smoke' })).toBe(10 * MIN)
-  expect(gt('globalTimeout: 9000', { E2E_SHARD_TIMINGS: tiny })).toBe(9000)
-  expect(gt('', { E2E_SHARD_TIMINGS: tiny, E2E_GLOBAL_TIMEOUT: '7' })).toBe(
-    7 * MIN
-  )
-})
-
 // -- test timeout and expect
 test('timeout: 30 s in every lane, a value or per lane from the repo; expect.toPass keeps its default next to a repo expect.timeout', () => {
   for (const lane of ['smoke', 'gate', 'full', 'real', 'manual'])
@@ -365,19 +288,20 @@ test('a shared blob folder: the same invocation replaces its own blob, another f
   run('b.spec.ts')
   expect(readdirSync(blobs)).toHaveLength(2)
 })
-test('a shard writes report-<i>-of-<n>.zip, and a runner-set PLAYWRIGHT_BLOB_OUTPUT_FILE is left alone', () => {
+test('a runner-set PLAYWRIGHT_BLOB_OUTPUT_FILE is left alone', () => {
   const d = project({
     'playwright.config.ts': cfg(),
     'auth.setup.ts': setupSpec,
     ...two,
   })
   const blobs = mkdtempSync(join(tmpdir(), 'e2e-blobs-'))
-  const r = playwright(d, ['--project=chromium', '--shard=1/2'], {
+  const r = playwright(d, ['--project=chromium'], {
+    E2E_BLOB: '1',
     E2E_BLOB_DIR: blobs,
   })
   expect(r.code).toBe(0)
   expect(readdirSync(blobs)).toEqual([
-    expect.stringMatching(/^report-[0-9a-f]{8}-1-of-2\.zip$/),
+    expect.stringMatching(/^report-[0-9a-f]{8}\.zip$/),
   ])
   const own = join(blobs, 'mine.zip')
   playwright(d, ['--project=chromium', 'a.spec.ts'], {
@@ -387,26 +311,4 @@ test('a shard writes report-<i>-of-<n>.zip, and a runner-set PLAYWRIGHT_BLOB_OUT
   expect(existsSync(own)).toBe(true)
   expect(readdirSync(blobs)).toContain('mine.zip')
   expect(readdirSync(blobs)).toHaveLength(2)
-})
-test('a shared blob folder: shard 1/2 of two lanes (or two project sets) keep separate files, and the hash ignores --shard', () => {
-  const d = project({
-    'playwright.config.ts': cfg(),
-    'auth.setup.ts': setupSpec,
-    ...two,
-  })
-  const blobs = mkdtempSync(join(tmpdir(), 'e2e-blobs-'))
-  const run = (lane: string, shard: string) =>
-    playwright(d, ['--project=chromium', `--shard=${shard}`], {
-      E2E_LANE: lane,
-      E2E_BLOB_DIR: blobs,
-    })
-  run('gate', '1/2')
-  run('full', '1/2')
-  expect(readdirSync(blobs)).toHaveLength(2)
-  run('gate', '2/2')
-  const names = readdirSync(blobs).sort()
-  expect(names).toHaveLength(3)
-  const hash = (n: string) => n.split('-')[1]
-  const gate = names.filter((n) => /-(1|2)-of-2/.test(n))
-  expect(new Set(gate.map(hash)).size).toBe(2) // gate's two shards share one hash, full has another
 })

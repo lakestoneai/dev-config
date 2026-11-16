@@ -242,11 +242,10 @@ const reporterNames = (rs: any[][]) =>
   rs
     .map((r) => r[0])
     .filter((n) => !n.endsWith('playwright-timeout-reporter.js'))
-test('reporters: list; blob when sharded; html + json + blob when E2E_REPORT_DIR', () => {
+test('reporters: list; html + json + blob when E2E_REPORT_DIR', () => {
   const names = (c: any) => reporterNames(c.reporter)
   expect(names(resolved(''))).toEqual(['list'])
-  expect(names(resolved('', { E2E_SHARD: '1/2' }))).toEqual(['list', 'blob'])
-  expect(names(resolved('', {}, ['--shard=1/1']))).toEqual(['list', 'blob'])
+  expect(names(resolved('', { E2E_SHARD: '1/2' }))).toEqual(['list']) // sharding is Playwright's own, the harness does not react
   const r = resolved('', { E2E_REPORT_DIR: '/tmp/e2e-rep' }).reporter
   expect(reporterNames(r)).toEqual(['list', 'blob', 'html', 'json'])
   expect(r.find((x: any[]) => x[0] === 'json')[1].outputFile).toBe(
@@ -480,12 +479,12 @@ test('github reporter only when GITHUB_ACTIONS', () => {
   expect(names({ GITHUB_ACTIONS: 'true' })).toEqual(['list', 'github'])
 })
 
-test('blob reporter also on PLAYWRIGHT_BLOB_OUTPUT_FILE or E2E_BLOB=1, not only when sharded', () => {
+test('blob reporter also on PLAYWRIGHT_BLOB_OUTPUT_FILE or E2E_BLOB=1', () => {
   const names = (env: Record<string, string>) =>
     reporterNames(resolved('', env).reporter)
-  expect(names({ PLAYWRIGHT_BLOB_OUTPUT_FILE: '/tmp/b/report-1.zip' })).toEqual(
-    ['list', 'blob']
-  )
+  expect(
+    names({ PLAYWRIGHT_BLOB_OUTPUT_FILE: '/tmp/e2e-config-blob/report-1.zip' })
+  ).toEqual(['list', 'blob'])
   expect(names({ E2E_BLOB: '1' })).toEqual(['list', 'blob'])
   expect(names({ E2E_BLOB: '0' })).toEqual(['list'])
   expect(names({})).toEqual(['list'])

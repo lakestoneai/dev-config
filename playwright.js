@@ -5,13 +5,8 @@
 // agents and scripted runs (they have no per-test timeout). README "Timeouts" lists every bound.
 import { defineConfig, devices } from '@playwright/test'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { timingsFromReport } from './playwright-shard-reporter.js'
 
-const SHARD_REPORTER = fileURLToPath(
-  new URL('./playwright-shard-reporter.js', import.meta.url)
-)
 const TIMEOUT_REPORTER = fileURLToPath(
   new URL('./playwright-timeout-reporter.js', import.meta.url)
 )
@@ -25,9 +20,6 @@ const GLOBAL_TIMEOUT = {
 }
 const TOPASS_TIMEOUT = 20_000
 const TEST_TIMEOUT = 30_000 // Playwright's own default, made explicit so a lane can set its own
-// Smart lane budget (E2E_SHARD_TIMINGS present): expected wall time x factor, never below the floor
-const BUDGET_FACTOR = 3
-const BUDGET_FLOOR_MS = 5 * 60_000
 // Interactive runs have a person at the keyboard: no run cap (`--debug` already sets timeout 0 itself)
 // (`--ui-port`/`--ui-host` open UI mode on their own, `--debug=cli` is the inspector's cli mode)
 const INTERACTIVE_ARG = /^--(ui|ui-port|ui-host|debug|headed)(=|$)/
@@ -46,39 +38,9 @@ export const playwrightDefaults = {
   expect: { toPass: { timeout: TOPASS_TIMEOUT } },
 }
 
-/**
- * Expected wall time of a run from a Playwright JSON report: the busiest of "all test time spread over the
- * workers of all shards" and the longest single file (a file never splits across workers).
- * @param {Map<string, number>} timings from `timingsFromReport`
- */
-export function expectedDurationMs(timings, { workers, shards }) {
-  let sum = 0
-  let longest = 0
-  for (const ms of timings.values()) {
-    sum += ms
-    longest = Math.max(longest, ms)
-  }
-  return Math.max(sum / (Math.max(workers, 1) * Math.max(shards, 1)), longest)
-}
-/** `globalTimeout` for an expected duration: factor x, rounded up to a second, never below the floor. */
-export const budgetFromExpected = (expectedMs) =>
-  Math.max(
-    BUDGET_FLOOR_MS,
-    Math.ceil((expectedMs * BUDGET_FACTOR) / 1000) * 1000
-  )
-
-// { current, total } from `--shard=i/n`, `--shard i/n` or E2E_SHARD=i/n; undefined when the shard count is unknown
-function shardCount(argv, env) {
-  const i = argv.findIndex((a) => a.startsWith('--shard'))
-  const spec =
-    i < 0 ? '' : argv[i].includes('=') ? argv[i].split('=')[1] : argv[i + 1]
-  const m = /^(\d+)\/(\d+)$/.exec(spec || env.E2E_SHARD || '')
-  return m ? { current: Number(m[1]), total: Number(m[2]) } : undefined
-}
-
 // Where a run's globalTimeout comes from, and how long it is: E2E_GLOBAL_TIMEOUT (minutes, 0 = off) > the repo's
-// value > a budget derived from E2E_SHARD_TIMINGS > the lane's fixed number. Interactive runs get none unless the env says so.
-function globalBudget({ env, argv, lane, repoValue, workers, shard, sharded }) {
+// value > the lane's fixed number. Interactive runs get none unless the env says so.
+function globalBudget({ env, argv, lane, repoValue }) {
   if (env.E2E_GLOBAL_TIMEOUT !== undefined && env.E2E_GLOBAL_TIMEOUT !== '') {
     const min = Number(env.E2E_GLOBAL_TIMEOUT)
     if (!Number.isFinite(min) || min < 0)
@@ -97,30 +59,6 @@ function globalBudget({ env, argv, lane, repoValue, workers, shard, sharded }) {
     return repoValue
       ? { ms: repoValue, source: "the repo's globalTimeout" }
       : {}
-  if (env.E2E_SHARD_TIMINGS) {
-    try {
-      const timings = timingsFromReport(
-        JSON.parse(readFileSync(env.E2E_SHARD_TIMINGS, 'utf8'))
-      )
-      if (timings.size) {
-        const expected = expectedDurationMs(timings, {
-          workers: typeof workers === 'number' ? workers : 1,
-          shards: shard?.total ?? 1,
-        })
-        // A shard runs a fraction of the suite, so its limit is the derived one. An unsharded run may be using a
-        // timings file from a smaller run (a smoke report, a file-filtered run): never cap it below the lane's number.
-        const derived = budgetFromExpected(expected)
-        const floor = sharded ? 0 : (GLOBAL_TIMEOUT[lane] ?? 0)
-        if (derived >= floor)
-          return {
-            ms: derived,
-            source: `derived from E2E_SHARD_TIMINGS: expected ${Math.round(expected / 1000)} s x ${BUDGET_FACTOR}, floor ${BUDGET_FLOOR_MS / 60_000} min`,
-          }
-      }
-    } catch {
-      // absent or unreadable timings: the lane's fixed number
-    }
-  }
   return { ms: GLOBAL_TIMEOUT[lane], source: `the ${lane} lane default` }
 }
 
@@ -171,18 +109,11 @@ export function defineE2EConfig(opts = {}) {
     v !== null && typeof v === 'object' ? (v[lane] ?? v.default) : v
   const ciSmokeRetry = env.CI && lane === 'smoke' ? 1 : undefined
   const watch = env.E2E_VIDEO === '1'
-  const sharded =
-    !!env.E2E_SHARD || process.argv.some((a) => a.startsWith('--shard'))
-
-  const shard = shardCount(process.argv, env)
   const budget = globalBudget({
     env,
     argv: process.argv,
     lane,
     repoValue: perLane(globalTimeout),
-    workers: perLane(workers),
-    shard,
-    sharded,
   })
 
   const reporter = [['list']]
@@ -193,16 +124,13 @@ export function defineE2EConfig(opts = {}) {
       TIMEOUT_REPORTER,
       { budgetMs: budget.ms, source: budget.source },
     ])
-  // blob: sharded runs, E2E_REPORT_DIR runs, and any run a merge step will read (a runner that splits by file lists passes no --shard)
+  // blob: E2E_REPORT_DIR runs, and any run a merge step will read
   if (
-    sharded ||
     env.E2E_REPORT_DIR ||
     env.PLAYWRIGHT_BLOB_OUTPUT_FILE ||
     env.E2E_BLOB === '1'
   )
-    reporter.push(['blob', blobOptions(env, shard, process.argv)])
-  // Opt-in duration-aware sharding: E2E_SHARD_TIMINGS = a previous JSON report. Absent (or no --shard), Playwright's own count sharding runs.
-  if (sharded && env.E2E_SHARD_TIMINGS) reporter.push([SHARD_REPORTER])
+    reporter.push(['blob', blobOptions(env, process.argv)])
   if (env.E2E_REPORT_DIR) {
     reporter.push(
       ['html', { outputFolder: `${env.E2E_REPORT_DIR}/html`, open: 'never' }],
@@ -299,31 +227,22 @@ export function defineE2EConfig(opts = {}) {
 // DIRECTORY before writing (release notes 1.65), so N runs that write into one `outputDir` keep only the last. An
 // `outputFile` is not wiped (measured on 1.65.1), so each run owns its file. Folder, and the name in it:
 //  - `<E2E_REPORT_DIR>/blob` (the run owns the folder; the testing box reuses it every run): a STABLE name, so the
-//    next run replaces the last blob instead of piling up next to it and a merge never sees an old run. A shard:
-//    `report-<i>-of-<n>.zip`, otherwise `report.zip`.
+//    next run replaces the last blob instead of piling up next to it and a merge never sees an old run: `report.zip`.
 //  - E2E_BLOB_DIR, or `blob-report` (a folder several runs share): a name from the invocation (lane + CLI args, like
-//    Playwright's own hash), so the same run replaces itself and another file list adds its own file; a shard adds
-//    `-<i>-of-<n>`: `report-<hash>-<i>-of-<n>.zip`, so two lanes' shard 1/2 do not overwrite each other.
+//    Playwright's own hash), so the same run replaces itself and another file list adds its own file: `report-<hash>.zip`.
 // A runner's own PLAYWRIGHT_BLOB_OUTPUT_FILE is left alone.
-function blobOptions(env, shard, argv) {
+function blobOptions(env, argv) {
   if (env.PLAYWRIGHT_BLOB_OUTPUT_FILE) return {}
   const runOwned = !env.E2E_BLOB_DIR && env.E2E_REPORT_DIR
   const dir =
     env.E2E_BLOB_DIR ||
     (runOwned ? `${env.E2E_REPORT_DIR}/blob` : 'blob-report')
-  // The hash leaves --shard out: a shard's own number is in the name, and one invocation's shards share a hash
-  const args = argv.slice(2).filter((a, i, all) => {
-    return !(/^--shard(=|$)/.test(a) || all[i - 1] === '--shard')
-  })
+  const args = argv.slice(2)
   const invocation = createHash('sha1')
     .update(JSON.stringify([env.E2E_LANE ?? '', args]))
     .digest('hex')
     .slice(0, 8)
-  const parts = [
-    runOwned ? '' : invocation,
-    shard ? `${shard.current}-of-${shard.total}` : '',
-  ].filter(Boolean)
-  const name = parts.join('-')
+  const name = runOwned ? '' : invocation
   return { outputFile: `${dir}/report${name && `-${name}`}.zip` }
 }
 
