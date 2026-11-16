@@ -5,13 +5,6 @@ import type {
   ReporterDescription,
 } from '@playwright/test'
 export declare const playwrightDefaults: PlaywrightTestConfig
-/** Expected wall time (ms) of a run from per-file timings (`timingsFromReport`): the busier of total time over workers x shards and the longest file */
-export declare function expectedDurationMs(
-  timings: Map<string, number>,
-  opts: { workers: number; shards: number }
-): number
-/** The `globalTimeout` (ms) for an expected duration: 3x, never below 5 min */
-export declare function budgetFromExpected(expectedMs: number): number
 
 import type { E2EAuth } from './playwright-fixtures.js'
 
@@ -42,7 +35,7 @@ export interface E2EOptions extends Omit<
   retries?: PerLane<number>
   /** Stop after N failed tests. Default on CI: smoke 3, gate 10, full/real 20; 0 (off) outside CI; or per lane */
   maxFailures?: PerLane<number>
-  /** Whole-run limit in ms, on every non-interactive run (CI or not). Default: smoke 10 min, gate 60, full/real 120, manual 60; with E2E_SHARD_TIMINGS, expected duration x 3 (floor 5 min). 0 = none; or per lane. E2E_GLOBAL_TIMEOUT (minutes) beats it */
+  /** Whole-run limit in ms, on every non-interactive run (CI or not). Default: smoke 10 min, gate 60, full/real 120, manual 60. 0 = none; or per lane. E2E_GLOBAL_TIMEOUT (minutes) beats it */
   globalTimeout?: PerLane<number>
   /** One test's limit in ms. Default 30 s (Playwright's own default, made explicit); or per lane */
   timeout?: PerLane<number>

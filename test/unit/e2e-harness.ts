@@ -48,7 +48,6 @@ export function playwright(
     'E2E_REPORT_DIR',
     'CI',
     'GITHUB_ACTIONS',
-    'E2E_SHARD_TIMINGS',
     'E2E_BLOB',
     'PLAYWRIGHT_BLOB_OUTPUT_FILE',
     'E2E_BLOB_DIR',

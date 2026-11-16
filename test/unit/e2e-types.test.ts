@@ -72,7 +72,7 @@ export default defineE2EConfig({ use: { auth } })
 
 test('0.7.0 types: any Playwright video value, globalSetup arrays, per-lane timeout, replace, loginTimeoutMs, httpOk retries', () => {
   const r =
-    tsc(`import { defineE2EConfig, expectedDurationMs, budgetFromExpected } from '@lakestoneai/dev-config/playwright'
+    tsc(`import { defineE2EConfig } from '@lakestoneai/dev-config/playwright'
 import { httpOk } from '@lakestoneai/dev-config/playwright/preflight'
 import { test, type E2EAuth } from '@lakestoneai/dev-config/playwright/fixtures'
 import TimeoutReporter from '@lakestoneai/dev-config/playwright/timeout-reporter'
@@ -86,7 +86,6 @@ export default defineE2EConfig({
 })
 test.use({ consoleOptions: { allow: [/x/], replace: true } })
 httpOk('http://x', { timeoutMs: 1, retries: 1, retryDelayMs: 1 })
-budgetFromExpected(expectedDurationMs(new Map([['a', 1]]), { workers: 1, shards: 1 }))
 new TimeoutReporter({ budgetMs: 1, source: 's' })
 `)
   expect(r.out).toBe('')
